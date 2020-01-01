@@ -231,7 +231,7 @@ vec3 FetchDiffuseFilteredTexture(vec3 p1, vec3 p2, vec3 p3, vec3 p4)
     float d = abs(planeDistxPlaneArea) / pow(planeAreaSquared, 0.75);
     
     // Flip texture to match OpenGL conventions
-    // Puv = Puv*vec2(1, -1) + vec2(0, 1);
+    Puv = Puv*vec2(-1, 1) + vec2(1, 0);
     
     // in source file(prefilterAreaLight.cpp)
     // const float dist = powf(3.0f, level) / powf(2.0f, Nlevels - 1.0f);

@@ -77,7 +77,10 @@
 				rectLight.position.set( 5, 5, 0 );
 				scene.add( rectLight );
 
-				var rectLightMesh = new THREE.Mesh( new THREE.PlaneBufferGeometry(), new THREE.MeshBasicMaterial( { side: THREE.BackSide } ) );
+				var rectLightMesh = new THREE.Mesh( new THREE.PlaneBufferGeometry(), new THREE.MeshBasicMaterial( {
+					side: THREE.BackSide,
+					map: new THREE.TextureLoader().load( "textures/758px-Canestra_di_frutta_(Caravaggio).jpg" )
+				} ) );
 				rectLightMesh.scale.x = rectLight.width;
 				rectLightMesh.scale.y = rectLight.height;
 				rectLight.add( rectLightMesh );
