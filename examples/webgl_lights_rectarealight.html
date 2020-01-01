@@ -43,6 +43,7 @@
 				renderer.shadowMap.enabled = true;
 				renderer.shadowMap.type = THREE.PCFSoftShadowMap;
 				renderer.outputEncoding = THREE.sRGBEncoding;
+				renderer.context.getExtension( 'EXT_shader_texture_lod' );
 				document.body.appendChild( renderer.domElement );
 
 				// Check for float-RT support

@@ -22,7 +22,8 @@ import {
 	RGBAFormat,
 	ShaderLib,
 	UVMapping,
-	UniformsLib
+	UniformsLib,
+	TextureLoader
 } from "../../../build/three.module.js";
 
 // Real-Time Polygonal-Light Shading with Linearly Transformed Cosines
@@ -43,13 +44,18 @@ var RectAreaLightUniformsLib = {
 
 		var ltc_1 = new DataTexture( new Float32Array( LTC_MAT_1 ), 64, 64, RGBAFormat, FloatType, UVMapping, ClampToEdgeWrapping, ClampToEdgeWrapping, LinearFilter, NearestFilter, 1 );
 		var ltc_2 = new DataTexture( new Float32Array( LTC_MAT_2 ), 64, 64, RGBAFormat, FloatType, UVMapping, ClampToEdgeWrapping, ClampToEdgeWrapping, LinearFilter, NearestFilter, 1 );
+		var uFilteredMap = new TextureLoader().load("textures/758px-Canestra_di_frutta_(Caravaggio).jpg");
 
 		UniformsLib.LTC_1 = ltc_1;
 		UniformsLib.LTC_2 = ltc_2;
+		UniformsLib.uFilteredMap = uFilteredMap;
 
 		// add ltc data textures to material uniforms
-
-		var ltc = { ltc_1: { value: null }, ltc_2: { value: null } };
+		var ltc = {
+			ltc_1: { value: null },
+			ltc_2: { value: null },
+			uFilteredMap: { value: null }
+		};
 
 		Object.assign( ShaderLib.standard.uniforms, ltc );
 		Object.assign( ShaderLib.physical.uniforms, ltc );
