@@ -353,6 +353,7 @@
 					map: diffuseTex,
 					bumpMap: bumpTex,
 					bumpScale: 0.3,
+					metalness: 1
 				} );
 
 				var planeGeo = new THREE.PlaneBufferGeometry( 100, 100 );
@@ -382,35 +383,51 @@
 				var planeRight = new THREE.Mesh( planeGeo, wallMat );
 				planeRight.position.x = 100;
 				planeRight.rotateY( - Math.PI / 2 );
-				scene.add( planeRight );
+				//scene.add( planeRight );
 
 				var planeLeft = new THREE.Mesh( planeGeo, wallMat );
 				planeLeft.position.x = - 100;
 				planeLeft.rotateY( Math.PI / 2 );
-				scene.add( planeLeft );
+				//scene.add( planeLeft );
 
 				//lights
-				var width = 50;
-				var height = 50;
-				var intensity = 10;
+				var width = 100;
+				var height = 100;
+				var intensity = 3;
 
 				RectAreaLightUniformsLib.init();
 
 				var blueRectLight = new THREE.RectAreaLight( 0xf3aaaa, intensity, width, height );
-				blueRectLight.position.set( 99, 5, 0 );
-				blueRectLight.lookAt( 0, 5, 0 );
+				blueRectLight.position.set( 100, 0, 0 );
+				blueRectLight.lookAt( 0, 0, 0 );
 				scene.add( blueRectLight );
 
-				var blueRectLightHelper = new RectAreaLightHelper( blueRectLight, 0xffffff );
-				blueRectLight.add( blueRectLightHelper );
+				// var blueRectLightHelper = new RectAreaLightHelper( blueRectLight, 0xffffff );
+				// blueRectLight.add( blueRectLightHelper );
+				var rectLightMesh = new THREE.Mesh( new THREE.PlaneBufferGeometry(), new THREE.MeshBasicMaterial( {
+					side: THREE.BackSide,
+					color: blueRectLight.color,
+					map: new THREE.TextureLoader().load( "textures/758px-Canestra_di_frutta_(Caravaggio).jpg" )
+				} ) );
+				rectLightMesh.scale.x = blueRectLight.width;
+				rectLightMesh.scale.y = blueRectLight.height;
+				blueRectLight.add( rectLightMesh );
 
-				var redRectLight = new THREE.RectAreaLight( 0x9aaeff, intensity, width, height );
+				var redRectLight = new THREE.RectAreaLight( 0x9aaeff, intensity - intensity, width, height );
 				redRectLight.position.set( - 99, 5, 0 );
 				redRectLight.lookAt( 0, 5, 0 );
 				scene.add( redRectLight );
 
-				var redRectLightHelper = new RectAreaLightHelper( redRectLight, 0xffffff );
-				redRectLight.add( redRectLightHelper );
+				// var redRectLightHelper = new RectAreaLightHelper( redRectLight, 0xffffff );
+				// redRectLight.add( redRectLightHelper );
+				var rectLightMesh = new THREE.Mesh( new THREE.PlaneBufferGeometry(), new THREE.MeshBasicMaterial( {
+					side: THREE.BackSide,
+					color: redRectLight.color,
+					map: new THREE.TextureLoader().load( "textures/758px-Canestra_di_frutta_(Caravaggio).jpg" )
+				} ) );
+				rectLightMesh.scale.x = redRectLight.width;
+				rectLightMesh.scale.y = redRectLight.height;
+				redRectLight.add( rectLightMesh );
 
 				render();
 
