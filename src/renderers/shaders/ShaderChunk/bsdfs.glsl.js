@@ -233,21 +233,28 @@ vec3 FetchDiffuseFilteredTexture(vec3 p1, vec3 p2, vec3 p3, vec3 p4)
     // Flip texture to match OpenGL conventions
     Puv = Puv*vec2(-1, 1) + vec2(1, 0);
     
+    float texSize = 4096.0; //stained glass
+	//float texSize = 4048.f; //lena
+	return FetchColorTexture(0.125 + 0.75 * Puv, log(texSize*d*d) ); // log(texSize*d)/log(3.0f) ????????????
+
+    
+   
+    
     // in source file(prefilterAreaLight.cpp)
     // const float dist = powf(3.0f, level) / powf(2.0f, Nlevels - 1.0f);
-    float lod = log(2048.0*d)/log(3.0);
-    lod = min(lod, 7.0);
-    
-    float lodA = floor(lod);
-    float lodB = ceil(lod);
-    float t = lod - lodA;
-    
-    // vec3 a = FetchColorTexture(Puv);
-    // vec3 b = FetchColorTexture(Puv);
-    vec3 a = FetchColorTexture(Puv, lodA);
-    vec3 b = FetchColorTexture(Puv, lodB);
+    // float lod = log(2048.0*d)/log(3.0);
+    // lod = min(lod, 7.0);
+        
 
-    return mix(a, b, t);
+    
+    //float lodA = floor(lod);
+    //float lodB = ceil(lod);
+    //float t = lod - lodA;
+    
+    //vec3 a = FetchColorTexture(Puv, lodA);
+    //vec3 b = FetchColorTexture(Puv, lodB);
+
+    //return mix(a, b, t);
 }
 
 vec3 LTC_Evaluate( const in vec3 N, const in vec3 V, const in vec3 P, const in mat3 mInv, const in vec3 rectCoords[ 4 ] ) {

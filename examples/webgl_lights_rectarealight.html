@@ -13,6 +13,11 @@
 			by <a href="http://github.com/abelnation" target="_blank" rel="noopener">abelnation</a>
 		</div>
 
+		<video id="video" muted autoplay loop crossOrigin="anonymous" playsinline style="display:none">
+			<source src="textures/sintel.ogv" type='video/ogg; codecs="theora, vorbis"'>
+			<source src="textures/sintel.mp4" type='video/mp4; codecs="avc1.42E01E, mp4a.40.2"'>
+		</video>
+
 		<script type="module">
 
 			import * as THREE from '../build/three.module.js';
@@ -73,13 +78,14 @@
 
 				RectAreaLightUniformsLib.init();
 
-				rectLight = new THREE.RectAreaLight( 0xffffff, 1, 10, 10 );
+				rectLight = new THREE.RectAreaLight( 0xffffff, 1, 480/20, 280/20 );
 				rectLight.position.set( 5, 5, 0 );
 				scene.add( rectLight );
 
 				var rectLightMesh = new THREE.Mesh( new THREE.PlaneBufferGeometry(), new THREE.MeshBasicMaterial( {
 					side: THREE.BackSide,
-					map: new THREE.TextureLoader().load( "textures/758px-Canestra_di_frutta_(Caravaggio).jpg" )
+					// map: new THREE.TextureLoader().load( "textures/758px-Canestra_di_frutta_(Caravaggio).jpg" )
+                    map: THREE.UniformsLib.uFilteredMap
 				} ) );
 				rectLightMesh.scale.x = rectLight.width;
 				rectLightMesh.scale.y = rectLight.height;
@@ -236,7 +242,7 @@
 
 				if ( param.motion ) {
 
-					var t = ( Date.now() / 2000 );
+					var t = 0;//( Date.now() / 2000 );
 
 					// move light in circle around center
 					// change light height with sine curve
@@ -246,7 +252,7 @@
 					var lx = r * Math.cos( t );
 					var lz = r * Math.sin( t );
 
-					var ly = 5.0 + 5.0 * Math.sin( t / 3.0 );
+					var ly = 5.0 + 5.0;// * Math.sin( t / 3.0 );
 
 					rectLight.position.set( lx, ly, lz );
 					rectLight.lookAt( origin );

@@ -2006,7 +2006,6 @@ function WebGLRenderer( parameters ) {
 			if ( m_uniforms.ltc_1 !== undefined ) m_uniforms.ltc_1.value = UniformsLib.LTC_1;
 			if ( m_uniforms.ltc_2 !== undefined ) m_uniforms.ltc_2.value = UniformsLib.LTC_2;
 			if ( m_uniforms.uFilteredMap !== undefined ) m_uniforms.uFilteredMap.value = UniformsLib.uFilteredMap;
-
 			WebGLUniforms.upload( _gl, materialProperties.uniformsList, m_uniforms, textures );
 
 			if ( material.isShaderMaterial ) {

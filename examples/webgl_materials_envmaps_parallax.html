@@ -13,6 +13,11 @@
 			<a href="http://threejs.org" target="_blank" rel="noopener">three.js</a> - box projected cubemap environment mapping. <br> created by <a href="https://codercat.tk" target="_blank" rel="noopener">codercat</a>
 		</div>
 
+		<video id="video" muted autoplay loop crossOrigin="anonymous" playsinline style="display:none">
+			<source src="textures/sintel.ogv" type='video/ogg; codecs="theora, vorbis"'>
+			<source src="textures/sintel.mp4" type='video/mp4; codecs="avc1.42E01E, mp4a.40.2"'>
+		</video>
+
 		<script type="module">
 
 			import * as THREE from '../build/three.module.js';
@@ -232,9 +237,13 @@
 
 			var groundPlane, wallMat;
 
+			var video, texture;
+
 			init();
 
 			function init() {
+
+
 
 				var container = document.getElementById( 'container' );
 
@@ -278,8 +287,8 @@
 				cameraControls.target.set( 0, - 10, 0 );
 				cameraControls.maxDistance = 400;
 				cameraControls.minDistance = 10;
-				cameraControls.addEventListener( 'change', render );
-				cameraControls.update();
+				// cameraControls.addEventListener( 'change', render );
+
 
 				// cube camera for environment map
 				cubeCamera = new THREE.CubeCamera( 1, 1000, 512 );
@@ -305,7 +314,8 @@
 
 				var boxProjectedMat = new THREE.MeshPhysicalMaterial( {
 					color: new THREE.Color( '#ffffff' ),
-					roughness: 1,
+					roughness: 0,
+					metalness: 0.1,
 					envMap: cubeCamera.renderTarget.texture,
 					roughnessMap: rMap
 				} );
@@ -391,15 +401,15 @@
 				//scene.add( planeLeft );
 
 				//lights
-				var width = 100;
-				var height = 100;
+				var width = 75;
+				var height = 75;
 				var intensity = 3;
 
 				RectAreaLightUniformsLib.init();
 
 				var blueRectLight = new THREE.RectAreaLight( 0xf3aaaa, intensity, width, height );
 				blueRectLight.position.set( 100, 0, 0 );
-				blueRectLight.lookAt( 0, 0, 0 );
+				blueRectLight.lookAt( 0, 5, 0 );
 				scene.add( blueRectLight );
 
 				// var blueRectLightHelper = new RectAreaLightHelper( blueRectLight, 0xffffff );
@@ -407,7 +417,8 @@
 				var rectLightMesh = new THREE.Mesh( new THREE.PlaneBufferGeometry(), new THREE.MeshBasicMaterial( {
 					side: THREE.BackSide,
 					color: blueRectLight.color,
-					map: new THREE.TextureLoader().load( "textures/758px-Canestra_di_frutta_(Caravaggio).jpg" )
+					// map: new THREE.TextureLoader().load( "textures/758px-Canestra_di_frutta_(Caravaggio).jpg" )
+					map: THREE.UniformsLib.uFilteredMap
 				} ) );
 				rectLightMesh.scale.x = blueRectLight.width;
 				rectLightMesh.scale.y = blueRectLight.height;
@@ -453,7 +464,10 @@
 			}
 
 			function render() {
-
+                requestAnimationFrame( render );
+                cameraControls.update();
+				// THREE.UniformsLib.uFilterMap = texture;
+				// console.log(THREE.UniformsLib.uFilterMap);
 				renderer.render( scene, camera );
 
 			}
