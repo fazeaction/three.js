@@ -13,9 +13,8 @@
 			<a href="http://threejs.org" target="_blank" rel="noopener">three.js</a> - box projected cubemap environment mapping. <br> created by <a href="https://codercat.tk" target="_blank" rel="noopener">codercat</a>
 		</div>
 
-		<video id="video" muted autoplay loop crossOrigin="anonymous" playsinline style="display:none">
-			<source src="textures/sintel.ogv" type='video/ogg; codecs="theora, vorbis"'>
-			<source src="textures/sintel.mp4" type='video/mp4; codecs="avc1.42E01E, mp4a.40.2"'>
+		<video id="video" autoplay loop crossOrigin="anonymous" playsinline style="display:none">
+			<source src="textures/rivalconsoles.mp4" type='video/mp4; codecs="avc1.42E01E, mp4a.40.2"'>
 		</video>
 
 		<script type="module">
@@ -243,7 +242,12 @@
 
 			function init() {
 
+				window.addEventListener( "mousedown", ()=>{
 
+					var video = document.getElementById( 'video' );
+					video.play();
+
+				} );
 
 				var container = document.getElementById( 'container' );
 
@@ -281,12 +285,15 @@
 
 				// camera
 				camera = new THREE.PerspectiveCamera( VIEW_ANGLE, ASPECT, NEAR, FAR );
-				camera.position.set( 280, 106, - 5 );
+				camera.position.set( -50, 10, 0 );
 
 				cameraControls = new OrbitControls( camera, renderer.domElement );
-				cameraControls.target.set( 0, - 10, 0 );
-				cameraControls.maxDistance = 400;
-				cameraControls.minDistance = 10;
+				cameraControls.target.set( -1, 0, 0 );
+                cameraControls.enableDamping = true;
+                cameraControls.dampingFactor = 0.25;
+                cameraControls.enableZoom = false;
+				//cameraControls.maxDistance = 400;
+				//cameraControls.minDistance = 10;
 				// cameraControls.addEventListener( 'change', render );
 
 
@@ -314,8 +321,8 @@
 
 				var boxProjectedMat = new THREE.MeshPhysicalMaterial( {
 					color: new THREE.Color( '#ffffff' ),
-					roughness: 0,
-					metalness: 0.1,
+					roughness: 0.6,
+					metalness: 0.6,
 					envMap: cubeCamera.renderTarget.texture,
 					roughnessMap: rMap
 				} );
@@ -344,7 +351,7 @@
 
 				groundPlane = new THREE.Mesh( new THREE.PlaneBufferGeometry( 200, 100, 100 ), boxProjectedMat );
 				groundPlane.rotateX( - Math.PI / 2 );
-				groundPlane.position.set( 0, - 49, 0 );
+				groundPlane.position.set( 0, - 30, 0 );
 				scene.add( groundPlane );
 
 				// walls
@@ -367,7 +374,7 @@
 				} );
 
 				var planeGeo = new THREE.PlaneBufferGeometry( 100, 100 );
-
+				var wallMat2 = new THREE.MeshBasicMaterial();
 				var planeBack1 = new THREE.Mesh( planeGeo, wallMat );
 				planeBack1.position.z = - 50;
 				planeBack1.position.x = - 50;
@@ -384,7 +391,7 @@
 				planeFront1.rotateY( Math.PI );
 				scene.add( planeFront1 );
 
-				var planeFront2 = new THREE.Mesh( planeGeo, wallMat );
+				var planeFront2 = new THREE.Mesh( planeGeo, wallMat);
 				planeFront2.position.z = 50;
 				planeFront2.position.x = 50;
 				planeFront2.rotateY( Math.PI );
@@ -395,14 +402,15 @@
 				planeRight.rotateY( - Math.PI / 2 );
 				//scene.add( planeRight );
 
-				var planeLeft = new THREE.Mesh( planeGeo, wallMat );
+				var planeLeft = new THREE.Mesh( planeGeo, wallMat2 );
 				planeLeft.position.x = - 100;
 				planeLeft.rotateY( Math.PI / 2 );
-				//scene.add( planeLeft );
+				// scene.add( planeLeft );
 
 				//lights
-				var width = 75;
-				var height = 75;
+				var sc=0.7;
+				var width = 128 * sc;
+				var height = 72 * sc;
 				var intensity = 3;
 
 				RectAreaLightUniformsLib.init();
@@ -427,7 +435,7 @@
 				var redRectLight = new THREE.RectAreaLight( 0x9aaeff, intensity - intensity, width, height );
 				redRectLight.position.set( - 99, 5, 0 );
 				redRectLight.lookAt( 0, 5, 0 );
-				scene.add( redRectLight );
+				//scene.add( redRectLight );
 
 				// var redRectLightHelper = new RectAreaLightHelper( redRectLight, 0xffffff );
 				// redRectLight.add( redRectLightHelper );
@@ -438,7 +446,7 @@
 				} ) );
 				rectLightMesh.scale.x = redRectLight.width;
 				rectLightMesh.scale.y = redRectLight.height;
-				redRectLight.add( rectLightMesh );
+				// redRectLight.add( rectLightMesh );
 
 				render();
 
@@ -464,8 +472,9 @@
 			}
 
 			function render() {
-                requestAnimationFrame( render );
-                cameraControls.update();
+
+				requestAnimationFrame( render );
+				cameraControls.update();
 				// THREE.UniformsLib.uFilterMap = texture;
 				// console.log(THREE.UniformsLib.uFilterMap);
 				renderer.render( scene, camera );

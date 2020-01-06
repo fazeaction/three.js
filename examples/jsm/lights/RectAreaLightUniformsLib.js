@@ -45,7 +45,7 @@ var RectAreaLightUniformsLib = {
 
 		var ltc_1 = new DataTexture( new Float32Array( LTC_MAT_1 ), 64, 64, RGBAFormat, FloatType, UVMapping, ClampToEdgeWrapping, ClampToEdgeWrapping, LinearFilter, NearestFilter, 1 );
 		var ltc_2 = new DataTexture( new Float32Array( LTC_MAT_2 ), 64, 64, RGBAFormat, FloatType, UVMapping, ClampToEdgeWrapping, ClampToEdgeWrapping, LinearFilter, NearestFilter, 1 );
-		//var uFilteredMap = new TextureLoader().load("textures/758px-Canestra_di_frutta_(Caravaggio).jpg");
+		// var uFilteredMap = new TextureLoader().load("textures/758px-Canestra_di_frutta_(Caravaggio).jpg");
 		var video = document.getElementById( 'video' );
 		video.play();
 		var uFilteredMap = new VideoTexture( video );

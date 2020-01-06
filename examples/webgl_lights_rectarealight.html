@@ -14,8 +14,7 @@
 		</div>
 
 		<video id="video" muted autoplay loop crossOrigin="anonymous" playsinline style="display:none">
-			<source src="textures/sintel.ogv" type='video/ogg; codecs="theora, vorbis"'>
-			<source src="textures/sintel.mp4" type='video/mp4; codecs="avc1.42E01E, mp4a.40.2"'>
+			<source src="textures/rivalconsoles.mp4" type='video/mp4; codecs="avc1.42E01E, mp4a.40.2"'>
 		</video>
 
 		<script type="module">
@@ -73,7 +72,7 @@
 
 				scene = new THREE.Scene();
 
-				var ambient = new THREE.AmbientLight( 0xffffff, 0.1 );
+				var ambient = new THREE.AmbientLight( 0xffffff, 0.0 );
 				scene.add( ambient );
 
 				RectAreaLightUniformsLib.init();
