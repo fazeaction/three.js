@@ -1,5 +1,5 @@
 export default /* glsl */`
-#extension GL_EXT_shader_texture_lod : enable
+// #extension GL_EXT_shader_texture_lod : enable
 // Analytical approximation of the DFG LUT, one half of the
 // split-sum approximation used in indirect specular lighting.
 // via 'environmentBRDF' from "Physically Based Shading on Mobile"
@@ -209,7 +209,7 @@ vec3 FetchColorTexture(vec2 uv, float lod)
 // Use code in 'LTC demo sample'
 vec3 FetchDiffuseFilteredTexture(vec3 p1, vec3 p2, vec3 p3, vec3 p4)
 {
-   
+
     // area light plane basis
     vec3 V1 = p2 - p1;
     vec3 V2 = p4 - p1;
@@ -229,28 +229,28 @@ vec3 FetchDiffuseFilteredTexture(vec3 p1, vec3 p2, vec3 p3, vec3 p4)
 
     // LOD
     float d = abs(planeDistxPlaneArea) / pow(planeAreaSquared, 0.75);
-    
+
     // Flip texture to match OpenGL conventions
     Puv = Puv*vec2(-1, 1) + vec2(1, 0);
-    
+
     float texSize = 4096.0; //stained glass
 	//float texSize = 4048.f; //lena
 	return FetchColorTexture(0.125 + 0.75 * Puv, log(texSize*d*d) ); // log(texSize*d)/log(3.0f) ????????????
 
-    
-   
-    
+
+
+
     // in source file(prefilterAreaLight.cpp)
     // const float dist = powf(3.0f, level) / powf(2.0f, Nlevels - 1.0f);
     // float lod = log(2048.0*d)/log(3.0);
     // lod = min(lod, 7.0);
-        
 
-    
+
+
     //float lodA = floor(lod);
     //float lodB = ceil(lod);
     //float t = lod - lodA;
-    
+
     //vec3 a = FetchColorTexture(Puv, lodA);
     //vec3 b = FetchColorTexture(Puv, lodB);
 
@@ -281,7 +281,7 @@ vec3 LTC_Evaluate( const in vec3 N, const in vec3 V, const in vec3 P, const in m
 	coords[ 1 ] = mat * ( rectCoords[ 1 ] - P );
 	coords[ 2 ] = mat * ( rectCoords[ 2 ] - P );
 	coords[ 3 ] = mat * ( rectCoords[ 3 ] - P );
-	
+
 	vec3 LL[4];
     LL[0] = coords[ 0 ];
     LL[1] = coords[ 1 ];

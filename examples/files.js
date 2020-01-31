@@ -146,6 +146,7 @@ var files = {
 		"webgl_materials_envmaps_exr",
 		"webgl_materials_envmaps_hdr",
 		"webgl_materials_envmaps_parallax",
+		"webgl_materials_envmaps_parallax2",
 		"webgl_materials_grass",
 		"webgl_materials_lightmap",
 		"webgl_materials_matcap",
