@@ -401,7 +401,8 @@
 		wallMat = new THREE.MeshPhysicalMaterial( {
 			map: diffuseTex,
 			bumpMap: bumpTex,
-			bumpScale: 0.3
+			bumpScale: 0.3,
+			envMap: cubeCamera.renderTarget.texture
 			// metalness: 1
 		} );
 
