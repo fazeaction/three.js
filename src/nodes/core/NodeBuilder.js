@@ -3325,7 +3325,18 @@ class NodeBuilder {
 
 		// stage 4: build code for a specific output
 
-		this.buildCode();
+		const codeOwner = this.material || this.compute;
+
+		if ( codeOwner !== null && codeOwner.isRawShader === true ) {
+
+			codeOwner.buildCode( this ); // hand-written module, see RawShaderNodeMaterial and RawComputeNode
+
+		} else {
+
+			this.buildCode();
+
+		}
+
 		this.buildUpdateNodes();
 
 		return this;
@@ -3389,7 +3400,18 @@ class NodeBuilder {
 
 		// stage 4: build code for a specific output
 
-		this.buildCode();
+		const codeOwner = this.material || this.compute;
+
+		if ( codeOwner !== null && codeOwner.isRawShader === true ) {
+
+			codeOwner.buildCode( this ); // hand-written module, see RawShaderNodeMaterial and RawComputeNode
+
+		} else {
+
+			this.buildCode();
+
+		}
+
 		this.buildUpdateNodes();
 
 		return this;

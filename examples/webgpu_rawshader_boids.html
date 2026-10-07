@@ -1,0 +1,298 @@
+<html lang="en">
+	<head>
+		<title>three.js webgpu - raw shader boids</title>
+		<meta charset="utf-8">
+		<meta name="viewport" content="width=device-width, user-scalable=no, minimum-scale=1.0, maximum-scale=1.0">
+		<meta property="og:title" content="three.js webgpu - raw shader boids">
+		<meta property="og:type" content="website">
+		<meta property="og:url" content="https://threejs.org/examples/webgpu_rawshader_boids.html">
+		<meta property="og:image" content="https://threejs.org/examples/screenshots/webgpu_rawshader_boids.jpg">
+		<link type="text/css" rel="stylesheet" href="example.css">
+	</head>
+	<body>
+
+		<div id="info">
+			<a href="https://threejs.org/" target="_blank" rel="noopener" class="logo-link"></a>
+
+			<div class="title-wrapper">
+				<a href="https://threejs.org/" target="_blank" rel="noopener">three.js</a><span>Raw Shader Boids</span>
+			</div>
+
+			<small>Hand-written WGSL through RawShaderNodeMaterial and RawComputeNode.<br />Ported from the WebGPU Samples "computeBoids" example.</small>
+		</div>
+
+		<!-- The vertex module. The renderer appends the bind group declarations it generates; nothing is declared here. -->
+		<script id="vertexShader" type="x-shader/x-wgsl">
+
+			struct VertexOutput {
+				@builtin( position ) position : vec4f,
+				@location( 4 ) color : vec4f,
+			};
+
+			@vertex
+			fn main(
+				@location( 0 ) particle : vec4f,   // per instance: xy = position, zw = velocity
+				@location( 1 ) position : vec3f    // per vertex: the triangle
+			) -> VertexOutput {
+
+				let a_particlePos = particle.xy;
+				let a_particleVel = particle.zw;
+				let a_pos = position.xy;
+
+				let angle = -atan2( a_particleVel.x, a_particleVel.y );
+				let pos = vec2(
+					( a_pos.x * cos( angle ) ) - ( a_pos.y * sin( angle ) ),
+					( a_pos.x * sin( angle ) ) + ( a_pos.y * cos( angle ) )
+				);
+
+				var output : VertexOutput;
+				output.position = vec4( pos + a_particlePos, 0.0, 1.0 );
+				output.color = vec4(
+					1.0 - sin( angle + 1.0 ) - a_particleVel.y,
+					pos.x * 100.0 - a_particleVel.y + 0.1,
+					a_particleVel.x + cos( angle + 0.5 ),
+					1.0
+				);
+				return output;
+
+			}
+
+		</script>
+
+		<script id="fragmentShader" type="x-shader/x-wgsl">
+
+			@fragment
+			fn main( @location( 4 ) color : vec4f ) -> @location( 0 ) vec4f {
+
+				return color;
+
+			}
+
+		</script>
+
+		<!-- The compute module. `struct Particle`, the storage bindings `particlesA` / `particlesB` and the
+		     `uniforms` struct are declared in JS below and appended by the renderer. -->
+		<script id="computeShader" type="x-shader/x-wgsl">
+
+			@compute @workgroup_size( 64 )
+			fn main( @builtin( global_invocation_id ) GlobalInvocationID : vec3u ) {
+
+				let index = GlobalInvocationID.x;
+				let numParticles = arrayLength( &particlesA.value );
+
+				if ( index >= numParticles ) {
+					return;
+				}
+
+				var vPos = particlesA.value[ index ].pos;
+				var vVel = particlesA.value[ index ].vel;
+				var cMass = vec2( 0.0 );
+				var cVel = vec2( 0.0 );
+				var colVel = vec2( 0.0 );
+				var cMassCount = 0u;
+				var cVelCount = 0u;
+				var pos : vec2f;
+				var vel : vec2f;
+
+				for ( var i = 0u; i < numParticles; i ++ ) {
+
+					if ( i == index ) {
+						continue;
+					}
+
+					pos = particlesA.value[ i ].pos.xy;
+					vel = particlesA.value[ i ].vel.xy;
+
+					if ( distance( pos, vPos ) < uniforms.rule1Distance ) {
+						cMass += pos;
+						cMassCount ++;
+					}
+					if ( distance( pos, vPos ) < uniforms.rule2Distance ) {
+						colVel -= pos - vPos;
+					}
+					if ( distance( pos, vPos ) < uniforms.rule3Distance ) {
+						cVel += vel;
+						cVelCount ++;
+					}
+
+				}
+
+				if ( cMassCount > 0 ) {
+					cMass = ( cMass / vec2( f32( cMassCount ) ) ) - vPos;
+				}
+				if ( cVelCount > 0 ) {
+					cVel /= f32( cVelCount );
+				}
+
+				vVel += ( cMass * uniforms.rule1Scale ) + ( colVel * uniforms.rule2Scale ) + ( cVel * uniforms.rule3Scale );
+
+				// clamp velocity for a more pleasing simulation
+				vVel = normalize( vVel ) * clamp( length( vVel ), 0.0, 0.1 );
+
+				// kinematic update
+				vPos = vPos + ( vVel * uniforms.deltaT );
+
+				// wrap around boundary
+				if ( vPos.x < -1.0 ) {
+					vPos.x = 1.0;
+				}
+				if ( vPos.x > 1.0 ) {
+					vPos.x = -1.0;
+				}
+				if ( vPos.y < -1.0 ) {
+					vPos.y = 1.0;
+				}
+				if ( vPos.y > 1.0 ) {
+					vPos.y = -1.0;
+				}
+
+				// write back
+				particlesB.value[ index ].pos = vPos;
+				particlesB.value[ index ].vel = vVel;
+
+			}
+
+		</script>
+
+		<script type="importmap">
+			{
+				"imports": {
+					"three": "../build/three.webgpu.js",
+					"three/webgpu": "../build/three.webgpu.js",
+					"three/tsl": "../build/three.tsl.js",
+					"three/addons/": "./jsm/"
+				}
+			}
+		</script>
+
+		<script type="module">
+
+			import * as THREE from 'three/webgpu';
+
+			const numParticles = 1500;
+
+			let renderer, scene, camera;
+			let meshA, meshB, stepAB, stepBA;
+			let frame = 0;
+
+			init();
+
+			async function init() {
+
+				renderer = new THREE.WebGPURenderer( { antialias: true } );
+				renderer.setPixelRatio( window.devicePixelRatio );
+				renderer.setSize( window.innerWidth, window.innerHeight );
+				renderer.setClearColor( 0x000000, 1 );
+				document.body.appendChild( renderer.domElement );
+
+				await renderer.init();
+
+				// two particle buffers for ping-pong, each particle = vec4( pos.xy, vel.xy )
+
+				const initial = new Float32Array( numParticles * 4 );
+
+				for ( let i = 0; i < numParticles; i ++ ) {
+
+					initial[ 4 * i + 0 ] = 2 * ( Math.random() - 0.5 );
+					initial[ 4 * i + 1 ] = 2 * ( Math.random() - 0.5 );
+					initial[ 4 * i + 2 ] = 2 * ( Math.random() - 0.5 ) * 0.1;
+					initial[ 4 * i + 3 ] = 2 * ( Math.random() - 0.5 ) * 0.1;
+
+				}
+
+				const particlesA = new THREE.StorageInstancedBufferAttribute( initial, 4 );
+				const particlesB = new THREE.StorageInstancedBufferAttribute( initial.slice(), 4 );
+
+				// render: one raw material, one geometry per particle buffer
+
+				const material = new THREE.RawShaderNodeMaterial( {
+					vertexShader: document.getElementById( 'vertexShader' ).textContent,
+					fragmentShader: document.getElementById( 'fragmentShader' ).textContent,
+					side: THREE.DoubleSide,
+					depthTest: false,
+					depthWrite: false
+				} );
+
+				const triangle = new THREE.Float32BufferAttribute( [ - 0.01, - 0.02, 0, 0.01, - 0.02, 0, 0.0, 0.02, 0 ], 3 );
+
+				const makeMesh = ( particles ) => {
+
+					const geometry = new THREE.InstancedBufferGeometry();
+					geometry.setAttribute( 'position', triangle );
+					geometry.setAttribute( 'particle', particles );
+					geometry.instanceCount = numParticles;
+
+					const mesh = new THREE.Mesh( geometry, material );
+					mesh.frustumCulled = false;
+
+					return mesh;
+
+				};
+
+				meshA = makeMesh( particlesA );
+				meshB = makeMesh( particlesB );
+
+				scene = new THREE.Scene();
+				scene.add( meshA, meshB );
+
+				camera = new THREE.OrthographicCamera( - 1, 1, 1, - 1, 0, 1 ); // the shader works in clip space and ignores it
+
+				// compute: the same module twice with the buffers swapped, like the sample's two bind groups
+
+				const simParams = {
+					deltaT: { value: 0.04 },
+					rule1Distance: { value: 0.1 },
+					rule2Distance: { value: 0.025 },
+					rule3Distance: { value: 0.025 },
+					rule1Scale: { value: 0.02 },
+					rule2Scale: { value: 0.05 },
+					rule3Scale: { value: 0.005 }
+				};
+
+				const structs = { Particle: { pos: 'vec2', vel: 'vec2' } };
+
+				const step = ( from, to ) => new THREE.RawComputeNode( {
+					source: document.getElementById( 'computeShader' ).textContent,
+					count: numParticles,
+					workgroupSize: [ 64, 1, 1 ],
+					uniforms: simParams,
+					structs,
+					storage: {
+						particlesA: { value: from, type: 'Particle', access: 'read' },
+						particlesB: { value: to, type: 'Particle', access: 'read_write' }
+					}
+				} );
+
+				stepAB = step( particlesA, particlesB );
+				stepBA = step( particlesB, particlesA );
+
+				window.addEventListener( 'resize', onWindowResize );
+
+				renderer.setAnimationLoop( animate );
+
+			}
+
+			function onWindowResize() {
+
+				renderer.setSize( window.innerWidth, window.innerHeight );
+
+			}
+
+			function animate() {
+
+				const even = frame % 2 === 0;
+
+				renderer.compute( even ? stepAB : stepBA );
+
+				meshB.visible = even; // after A -> B, draw B
+				meshA.visible = ! even; // after B -> A, draw A
+
+				renderer.render( scene, camera );
+
+				frame ++;
+
+			}
+
+		</script>
+	</body>
+</html>

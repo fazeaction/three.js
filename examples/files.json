@@ -470,6 +470,7 @@
 		"webgpu_postprocessing",
 		"webgpu_postprocessing_direct",
 		"webgpu_procedural_texture",
+		"webgpu_rawshader_boids",
 		"webgpu_reflection",
 		"webgpu_reflection_blurred",
 		"webgpu_reflection_roughness",
@@ -592,7 +593,6 @@
 		"physics_rapier_character_controller",
 		"physics_rapier_vehicle_controller",
 		"physics_rapier_terrain"
-
 	],
 	"misc": [
 		"misc_animation_groups",
