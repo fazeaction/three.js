@@ -305,6 +305,7 @@
 			const clock = new THREE.Clock();
 			const pointer = new THREE.Vector2( 10, 10 ); // off screen until the pointer moves
 			const raycaster = new THREE.Raycaster();
+			let dragging = false; // while a drag steers the camera, the predator stays away
 
 			init();
 
@@ -325,8 +326,12 @@
 
 				setCameraMode( settings.camera );
 
-				const box = new THREE.LineSegments( new THREE.EdgesGeometry( new THREE.BoxGeometry( 2, 2, 2 ) ), new THREE.LineBasicNodeMaterial( { color: 0x33404f } ) );
+				const box = new THREE.LineSegments( new THREE.EdgesGeometry( new THREE.BoxGeometry( 2, 2, 2 ) ), new THREE.LineBasicNodeMaterial( { color: 0x5a6b80 } ) );
 				scene.add( box );
+
+				const floor = new THREE.GridHelper( 2, 10, 0x5a6b80, 0x2a3442 );
+				floor.position.y = - 1;
+				scene.add( floor );
 
 				createFlock( settings.count );
 
@@ -346,6 +351,8 @@
 				} );
 
 				renderer.domElement.addEventListener( 'pointermove', onPointerMove );
+				renderer.domElement.addEventListener( 'pointerdown', () => dragging = true );
+				window.addEventListener( 'pointerup', () => dragging = false );
 				window.addEventListener( 'resize', onWindowResize );
 
 				renderer.setAnimationLoop( animate );
@@ -572,7 +579,7 @@
 				const { simParams } = flock;
 				simParams.deltaTime.value = deltaTime;
 
-				raycaster.setFromCamera( pointer, camera );
+				raycaster.setFromCamera( dragging ? new THREE.Vector2( 10, 10 ) : pointer, camera );
 				simParams.rayOrigin.value.copy( raycaster.ray.origin ).multiplyScalar( BOUNDS_HALF );
 				simParams.rayDirection.value.copy( raycaster.ray.direction );
 
