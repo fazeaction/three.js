@@ -18,41 +18,46 @@
 				<a href="https://threejs.org/" target="_blank" rel="noopener">three.js</a><span>Raw Shader Boids</span>
 			</div>
 
-			<small>Hand-written WGSL through RawShaderNodeMaterial and RawComputeNode.<br />Ported from the WebGPU Samples "computeBoids" example.</small>
+			<small>Hand-written WGSL through RawShaderNodeMaterial and RawComputeNode, up to one million boids.<br />A uniform grid with atomics replaces the all-pairs loop of the WebGPU Samples "computeBoids" example; each cell keeps copies of its boids so neighbours are read contiguously.</small>
 		</div>
 
-		<!-- The vertex module. The renderer appends the bind group declarations it generates; nothing is declared here. -->
+		<!-- Vertex module. Particles are pulled from a storage buffer by instance index; the renderer
+		     appends `struct Particle`, the `particles` binding and the `uniforms` struct. -->
 		<script id="vertexShader" type="x-shader/x-wgsl">
 
 			struct VertexOutput {
-				@builtin( position ) position : vec4f,
-				@location( 4 ) color : vec4f,
+				@builtin( position ) clip : vec4f,
+				@location( 0 ) color : vec3f,
+				@location( 1 ) normal : vec3f,
 			};
 
 			@vertex
 			fn main(
-				@location( 0 ) particle : vec4f,   // per instance: xy = position, zw = velocity
-				@location( 1 ) position : vec3f    // per vertex: the triangle
+				@builtin( instance_index ) instance : u32,
+				@location( 0 ) position : vec3f,
+				@location( 1 ) normal : vec3f
 			) -> VertexOutput {
 
-				let a_particlePos = particle.xy;
-				let a_particleVel = particle.zw;
-				let a_pos = position.xy;
+				let p = particles.value[ instance ].pos;
+				let v = particles.value[ instance ].vel;
 
-				let angle = -atan2( a_particleVel.x, a_particleVel.y );
-				let pos = vec2(
-					( a_pos.x * cos( angle ) ) - ( a_pos.y * sin( angle ) ),
-					( a_pos.x * sin( angle ) ) + ( a_pos.y * cos( angle ) )
-				);
+				// orient the cone along the velocity
+
+				let speed = length( v );
+				let forward = select( vec3f( 0.0, 0.0, 1.0 ), v / speed, speed > 1e-6 );
+				var up = vec3f( 0.0, 1.0, 0.0 );
+				if ( abs( dot( forward, up ) ) > 0.99 ) {
+					up = vec3f( 1.0, 0.0, 0.0 );
+				}
+				let right = normalize( cross( up, forward ) );
+				let basis = mat3x3f( right, cross( forward, right ), forward );
+
+				let world = p + basis * ( position * uniforms.boidSize );
 
 				var output : VertexOutput;
-				output.position = vec4( pos + a_particlePos, 0.0, 1.0 );
-				output.color = vec4(
-					1.0 - sin( angle + 1.0 ) - a_particleVel.y,
-					pos.x * 100.0 - a_particleVel.y + 0.1,
-					a_particleVel.x + cos( angle + 0.5 ),
-					1.0
-				);
+				output.clip = uniforms.projectionMatrix * uniforms.modelViewMatrix * vec4f( world, 1.0 );
+				output.normal = uniforms.normalMatrix * ( basis * normal );
+				output.color = vec3f( 0.55 ) + 0.45 * forward + vec3f( speed * 4.0, 0.0, speed * 2.0 );
 				return output;
 
 			}
@@ -62,93 +67,164 @@
 		<script id="fragmentShader" type="x-shader/x-wgsl">
 
 			@fragment
-			fn main( @location( 4 ) color : vec4f ) -> @location( 0 ) vec4f {
+			fn main( @location( 0 ) color : vec3f, @location( 1 ) normal : vec3f ) -> @location( 0 ) vec4f {
 
-				return color;
+				let n = normalize( normal );
+				let light = normalize( vec3f( 0.4, 0.8, 0.6 ) );
+				let diffuse = 0.25 + 0.75 * max( dot( n, light ), 0.0 );
+				return vec4f( color * diffuse, 1.0 );
 
 			}
 
 		</script>
 
-		<!-- The compute module. `struct Particle`, the storage bindings `particlesA` / `particlesB` and the
-		     `uniforms` struct are declared in JS below and appended by the renderer. -->
-		<script id="computeShader" type="x-shader/x-wgsl">
+		<!-- Pass 1: reset the per-cell counters. -->
+		<script id="clearGridShader" type="x-shader/x-wgsl">
 
 			@compute @workgroup_size( 64 )
-			fn main( @builtin( global_invocation_id ) GlobalInvocationID : vec3u ) {
+			fn main( @builtin( global_invocation_id ) id : vec3u ) {
 
-				let index = GlobalInvocationID.x;
-				let numParticles = arrayLength( &particlesA.value );
-
-				if ( index >= numParticles ) {
+				if ( id.x >= arrayLength( &cellCount.value ) ) {
 					return;
 				}
 
-				var vPos = particlesA.value[ index ].pos;
-				var vVel = particlesA.value[ index ].vel;
-				var cMass = vec2( 0.0 );
-				var cVel = vec2( 0.0 );
-				var colVel = vec2( 0.0 );
+				atomicStore( &cellCount.value[ id.x ], 0u );
+
+			}
+
+		</script>
+
+		<!-- Pass 2: every boid claims a slot in its grid cell and copies itself there, so pass 3 reads
+		     neighbours contiguously instead of chasing indices through the particle buffer. -->
+		<script id="binBoidsShader" type="x-shader/x-wgsl">
+
+			@compute @workgroup_size( 64 )
+			fn main( @builtin( global_invocation_id ) id : vec3u ) {
+
+				let index = id.x;
+
+				if ( index >= arrayLength( &particles.value ) ) {
+					return;
+				}
+
+				let p = particles.value[ index ].pos;
+				let v = particles.value[ index ].vel;
+
+				let dim = uniforms.gridDim;
+				let c = vec3u( clamp( ( p + vec3f( 1.0 ) ) / uniforms.cellSize, vec3f( 0.0 ), vec3f( f32( dim - 1u ) ) ) );
+				let cell = c.x + c.y * dim + c.z * dim * dim;
+
+				let slot = atomicAdd( &cellCount.value[ cell ], 1u );
+
+				if ( slot < uniforms.slots ) {
+					cellData.value[ cell * uniforms.slots + slot ] = Slot( p, index, v, 0u );
+				} else {
+					// a full cell: this boid skips the rules this frame but is carried over
+					particlesOut.value[ index ] = Particle( p, v );
+				}
+
+			}
+
+		</script>
+
+		<!-- Pass 3: the three boid rules over the 27 neighbouring cells, written to the other buffer.
+		     One thread per cell slot rather than per boid, so the threads of a workgroup share the
+		     same neighbourhood and the reads stay in cache. -->
+		<script id="updateBoidsShader" type="x-shader/x-wgsl">
+
+			@compute @workgroup_size( 64 )
+			fn main( @builtin( global_invocation_id ) id : vec3u ) {
+
+				let slotIndex = id.x;
+				let cell = slotIndex / uniforms.slots;
+				let slot = slotIndex % uniforms.slots;
+
+				if ( cell >= arrayLength( &cellCount.value ) ) {
+					return;
+				}
+
+				if ( slot >= min( atomicLoad( &cellCount.value[ cell ] ), uniforms.slots ) ) {
+					return;
+				}
+
+				let boid = cellData.value[ slotIndex ];
+				let index = boid.index;
+				var vPos = boid.pos;
+				var vVel = boid.vel;
+				var cMass = vec3f( 0.0 );
+				var cVel = vec3f( 0.0 );
+				var colVel = vec3f( 0.0 );
 				var cMassCount = 0u;
 				var cVelCount = 0u;
-				var pos : vec2f;
-				var vel : vec2f;
 
-				for ( var i = 0u; i < numParticles; i ++ ) {
+				let dim = uniforms.gridDim;
+				let home = vec3i( i32( cell % dim ), i32( ( cell / dim ) % dim ), i32( cell / ( dim * dim ) ) );
 
-					if ( i == index ) {
-						continue;
+				for ( var dz = - 1; dz <= 1; dz ++ ) {
+					for ( var dy = - 1; dy <= 1; dy ++ ) {
+						for ( var dx = - 1; dx <= 1; dx ++ ) {
+
+							let c = home + vec3i( dx, dy, dz );
+
+							if ( any( c < vec3i( 0 ) ) || any( c >= vec3i( i32( dim ) ) ) ) {
+								continue;
+							}
+
+							let other_cell = u32( c.x ) + u32( c.y ) * dim + u32( c.z ) * dim * dim;
+							let count = min( atomicLoad( &cellCount.value[ other_cell ] ), uniforms.slots );
+
+							for ( var j = 0u; j < count; j ++ ) {
+
+								let other = cellData.value[ other_cell * uniforms.slots + j ];
+
+								if ( other.index == index ) {
+									continue;
+								}
+
+								let pos = other.pos;
+								let vel = other.vel;
+								let d = distance( pos, vPos );
+
+								if ( d < uniforms.rule1Distance ) {
+									cMass += pos;
+									cMassCount ++;
+								}
+								if ( d < uniforms.rule2Distance ) {
+									colVel -= pos - vPos;
+								}
+								if ( d < uniforms.rule3Distance ) {
+									cVel += vel;
+									cVelCount ++;
+								}
+
+							}
+
+						}
 					}
-
-					pos = particlesA.value[ i ].pos.xy;
-					vel = particlesA.value[ i ].vel.xy;
-
-					if ( distance( pos, vPos ) < uniforms.rule1Distance ) {
-						cMass += pos;
-						cMassCount ++;
-					}
-					if ( distance( pos, vPos ) < uniforms.rule2Distance ) {
-						colVel -= pos - vPos;
-					}
-					if ( distance( pos, vPos ) < uniforms.rule3Distance ) {
-						cVel += vel;
-						cVelCount ++;
-					}
-
 				}
 
-				if ( cMassCount > 0 ) {
-					cMass = ( cMass / vec2( f32( cMassCount ) ) ) - vPos;
+				if ( cMassCount > 0u ) {
+					cMass = ( cMass / f32( cMassCount ) ) - vPos;
 				}
-				if ( cVelCount > 0 ) {
+				if ( cVelCount > 0u ) {
 					cVel /= f32( cVelCount );
 				}
 
 				vVel += ( cMass * uniforms.rule1Scale ) + ( colVel * uniforms.rule2Scale ) + ( cVel * uniforms.rule3Scale );
 
 				// clamp velocity for a more pleasing simulation
-				vVel = normalize( vVel ) * clamp( length( vVel ), 0.0, 0.1 );
+				let speed = length( vVel );
+				if ( speed > 1e-6 ) {
+					vVel = vVel / speed * clamp( speed, 0.0, 0.1 );
+				}
 
 				// kinematic update
 				vPos = vPos + ( vVel * uniforms.deltaT );
 
-				// wrap around boundary
-				if ( vPos.x < -1.0 ) {
-					vPos.x = 1.0;
-				}
-				if ( vPos.x > 1.0 ) {
-					vPos.x = -1.0;
-				}
-				if ( vPos.y < -1.0 ) {
-					vPos.y = 1.0;
-				}
-				if ( vPos.y > 1.0 ) {
-					vPos.y = -1.0;
-				}
+				// wrap around the cube
+				vPos = vPos - 2.0 * floor( ( vPos + vec3f( 1.0 ) ) * 0.5 );
 
-				// write back
-				particlesB.value[ index ].pos = vPos;
-				particlesB.value[ index ].vel = vVel;
+				particlesOut.value[ index ] = Particle( vPos, vVel );
 
 			}
 
@@ -169,10 +245,16 @@
 
 			import * as THREE from 'three/webgpu';
 
-			const numParticles = 1500;
+			import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+			import { GUI } from 'three/addons/libs/lil-gui.module.min.js';
+			import Stats from 'three/addons/libs/stats.module.js';
 
-			let renderer, scene, camera;
-			let meshA, meshB, stepAB, stepBA;
+			const shader = ( id ) => document.getElementById( id ).textContent;
+
+			const settings = { count: 100000 };
+
+			let renderer, scene, camera, controls, stats;
+			let flock = null;
 			let frame = 0;
 
 			init();
@@ -182,45 +264,121 @@
 				renderer = new THREE.WebGPURenderer( { antialias: true } );
 				renderer.setPixelRatio( window.devicePixelRatio );
 				renderer.setSize( window.innerWidth, window.innerHeight );
-				renderer.setClearColor( 0x000000, 1 );
+				renderer.setClearColor( 0x0b0e14, 1 );
 				document.body.appendChild( renderer.domElement );
 
 				await renderer.init();
 
-				// two particle buffers for ping-pong, each particle = vec4( pos.xy, vel.xy )
+				scene = new THREE.Scene();
 
-				const initial = new Float32Array( numParticles * 4 );
+				camera = new THREE.PerspectiveCamera( 50, window.innerWidth / window.innerHeight, 0.01, 50 );
+				camera.position.set( 2.6, 1.6, 2.6 );
 
-				for ( let i = 0; i < numParticles; i ++ ) {
+				controls = new OrbitControls( camera, renderer.domElement );
+				controls.enableDamping = true;
 
-					initial[ 4 * i + 0 ] = 2 * ( Math.random() - 0.5 );
-					initial[ 4 * i + 1 ] = 2 * ( Math.random() - 0.5 );
-					initial[ 4 * i + 2 ] = 2 * ( Math.random() - 0.5 ) * 0.1;
-					initial[ 4 * i + 3 ] = 2 * ( Math.random() - 0.5 ) * 0.1;
+				const box = new THREE.LineSegments( new THREE.EdgesGeometry( new THREE.BoxGeometry( 2, 2, 2 ) ), new THREE.LineBasicNodeMaterial( { color: 0x33404f } ) );
+				scene.add( box );
+
+				createFlock( settings.count );
+
+				stats = new Stats();
+				document.body.appendChild( stats.dom );
+
+				const gui = new GUI();
+				gui.add( settings, 'count', { '1.5k': 1500, '10k': 10000, '100k': 100000, '500k': 500000, '1M': 1000000 } ).name( 'boids' ).onChange( ( count ) => createFlock( count ) );
+
+				window.addEventListener( 'resize', onWindowResize );
+
+				renderer.setAnimationLoop( animate );
+
+			}
+
+			// The rule radius shrinks with the count so that every boid keeps about twelve neighbours,
+			// and the grid cell is the largest rule radius, so 27 cells cover the search.
+
+			function layoutFor( count ) {
+
+				const density = count / 8; // the cube spans [ -1, 1 ] on each axis
+				const radius = Math.min( 0.35, Math.max( 0.02, Math.cbrt( 12 / ( density * 4.18879 ) ) ) );
+				const gridDim = Math.max( 1, Math.floor( 2 / radius ) );
+
+				const cells = gridDim ** 3;
+				const slots = Math.min( 16, Math.max( 4, Math.floor( 96e6 / ( cells * 32 ) ) ) ); // 32 bytes per slot, under the default storage binding limit
+
+				return { radius, gridDim, cellSize: 2 / gridDim, cells, slots };
+
+			}
+
+			function createFlock( count ) {
+
+				if ( flock !== null ) {
+
+					scene.remove( flock.meshA, flock.meshB );
+					flock.meshA.geometry.dispose();
+					flock.meshB.geometry.dispose();
+					flock.meshA.material.dispose();
+					flock.meshB.material.dispose();
 
 				}
 
-				const particlesA = new THREE.StorageInstancedBufferAttribute( initial, 4 );
-				const particlesB = new THREE.StorageInstancedBufferAttribute( initial.slice(), 4 );
+				const layout = layoutFor( count );
 
-				// render: one raw material, one geometry per particle buffer
+				// particle = struct Particle { pos : vec3f, vel : vec3f }, 32 bytes with WGSL alignment
 
-				const material = new THREE.RawShaderNodeMaterial( {
-					vertexShader: document.getElementById( 'vertexShader' ).textContent,
-					fragmentShader: document.getElementById( 'fragmentShader' ).textContent,
-					side: THREE.DoubleSide,
-					depthTest: false,
-					depthWrite: false
-				} );
+				const initial = new Float32Array( count * 8 );
 
-				const triangle = new THREE.Float32BufferAttribute( [ - 0.01, - 0.02, 0, 0.01, - 0.02, 0, 0.0, 0.02, 0 ], 3 );
+				for ( let i = 0; i < count; i ++ ) {
+
+					initial[ 8 * i + 0 ] = 2 * ( Math.random() - 0.5 );
+					initial[ 8 * i + 1 ] = 2 * ( Math.random() - 0.5 );
+					initial[ 8 * i + 2 ] = 2 * ( Math.random() - 0.5 );
+					initial[ 8 * i + 4 ] = 2 * ( Math.random() - 0.5 ) * 0.1;
+					initial[ 8 * i + 5 ] = 2 * ( Math.random() - 0.5 ) * 0.1;
+					initial[ 8 * i + 6 ] = 2 * ( Math.random() - 0.5 ) * 0.1;
+
+				}
+
+				const particlesA = new THREE.StorageBufferAttribute( initial, 8 );
+				const particlesB = new THREE.StorageBufferAttribute( initial.slice(), 8 );
+				const cellCount = new THREE.StorageBufferAttribute( new Uint32Array( layout.cells ), 1 );
+				const cellData = new THREE.StorageBufferAttribute( new Float32Array( layout.cells * layout.slots * 8 ), 8 );
+
+				// struct Slot { pos : vec3f, index : u32, vel : vec3f, pad : u32 } packs into the same 32 bytes as a Particle
+				const structs = { Particle: { pos: 'vec3', vel: 'vec3' }, Slot: { pos: 'vec3', index: 'uint', vel: 'vec3', pad: 'uint' } };
+
+				const simParams = {
+					deltaT: { value: 0.04 },
+					rule1Distance: { value: layout.radius },
+					rule2Distance: { value: layout.radius * 0.25 },
+					rule3Distance: { value: layout.radius * 0.25 },
+					rule1Scale: { value: 0.02 },
+					rule2Scale: { value: 0.05 },
+					rule3Scale: { value: 0.005 },
+					gridDim: { value: layout.gridDim, type: 'uint' },
+					cellSize: { value: layout.cellSize },
+					slots: { value: layout.slots, type: 'uint' }
+				};
+
+				// render: a cone per boid, instance data pulled from the particle buffer
+
+				const cone = new THREE.ConeGeometry( 0.35, 1, 4, 1, true );
+				cone.rotateX( Math.PI / 2 ); // tip towards +z, the forward axis in the vertex shader
+
+				const renderParams = { boidSize: { value: Math.min( 0.04, Math.max( 0.004, layout.radius * 0.3 ) ) } };
 
 				const makeMesh = ( particles ) => {
 
-					const geometry = new THREE.InstancedBufferGeometry();
-					geometry.setAttribute( 'position', triangle );
-					geometry.setAttribute( 'particle', particles );
-					geometry.instanceCount = numParticles;
+					const material = new THREE.RawShaderNodeMaterial( {
+						vertexShader: shader( 'vertexShader' ),
+						fragmentShader: shader( 'fragmentShader' ),
+						uniforms: renderParams,
+						structs,
+						storage: { particles: { value: particles, type: 'Particle' } }
+					} );
+
+					const geometry = new THREE.InstancedBufferGeometry().copy( cone );
+					geometry.instanceCount = count;
 
 					const mesh = new THREE.Mesh( geometry, material );
 					mesh.frustumCulled = false;
@@ -229,50 +387,61 @@
 
 				};
 
-				meshA = makeMesh( particlesA );
-				meshB = makeMesh( particlesB );
-
-				scene = new THREE.Scene();
+				const meshA = makeMesh( particlesA );
+				const meshB = makeMesh( particlesB );
 				scene.add( meshA, meshB );
 
-				camera = new THREE.OrthographicCamera( - 1, 1, 1, - 1, 0, 1 ); // the shader works in clip space and ignores it
+				// compute: clear the grid, bin the boids, apply the rules; built once per direction
 
-				// compute: the same module twice with the buffers swapped, like the sample's two bind groups
-
-				const simParams = {
-					deltaT: { value: 0.04 },
-					rule1Distance: { value: 0.1 },
-					rule2Distance: { value: 0.025 },
-					rule3Distance: { value: 0.025 },
-					rule1Scale: { value: 0.02 },
-					rule2Scale: { value: 0.05 },
-					rule3Scale: { value: 0.005 }
-				};
-
-				const structs = { Particle: { pos: 'vec2', vel: 'vec2' } };
-
-				const step = ( from, to ) => new THREE.RawComputeNode( {
-					source: document.getElementById( 'computeShader' ).textContent,
-					count: numParticles,
-					workgroupSize: [ 64, 1, 1 ],
-					uniforms: simParams,
-					structs,
-					storage: {
-						particlesA: { value: from, type: 'Particle', access: 'read' },
-						particlesB: { value: to, type: 'Particle', access: 'read_write' }
-					}
+				const clearGrid = new THREE.RawComputeNode( {
+					source: shader( 'clearGridShader' ),
+					count: layout.cells,
+					storage: { cellCount: { value: cellCount, type: 'uint', access: 'read_write', atomic: true } }
 				} );
 
-				stepAB = step( particlesA, particlesB );
-				stepBA = step( particlesB, particlesA );
+				const step = ( from, to ) => [
 
-				window.addEventListener( 'resize', onWindowResize );
+					new THREE.RawComputeNode( {
+						source: shader( 'binBoidsShader' ),
+						count,
+						uniforms: simParams,
+						structs,
+						storage: {
+							particles: { value: from, type: 'Particle', access: 'read' },
+							particlesOut: { value: to, type: 'Particle', access: 'read_write' },
+							cellCount: { value: cellCount, type: 'uint', access: 'read_write', atomic: true },
+							cellData: { value: cellData, type: 'Slot', access: 'read_write' }
+						}
+					} ),
 
-				renderer.setAnimationLoop( animate );
+					new THREE.RawComputeNode( {
+						source: shader( 'updateBoidsShader' ),
+						count: layout.cells * layout.slots,
+						uniforms: simParams,
+						structs,
+						storage: {
+							particlesOut: { value: to, type: 'Particle', access: 'read_write' },
+							cellCount: { value: cellCount, type: 'uint', access: 'read_write', atomic: true },
+							cellData: { value: cellData, type: 'Slot', access: 'read' }
+						}
+					} )
+
+				];
+
+				flock = {
+					meshA, meshB,
+					stepAB: [ clearGrid, ...step( particlesA, particlesB ) ],
+					stepBA: [ clearGrid, ...step( particlesB, particlesA ) ]
+				};
+
+				frame = 0;
 
 			}
 
 			function onWindowResize() {
+
+				camera.aspect = window.innerWidth / window.innerHeight;
+				camera.updateProjectionMatrix();
 
 				renderer.setSize( window.innerWidth, window.innerHeight );
 
@@ -282,12 +451,14 @@
 
 				const even = frame % 2 === 0;
 
-				renderer.compute( even ? stepAB : stepBA );
+				renderer.compute( even ? flock.stepAB : flock.stepBA );
 
-				meshB.visible = even; // after A -> B, draw B
-				meshA.visible = ! even; // after B -> A, draw A
+				flock.meshB.visible = even; // after A -> B, draw B
+				flock.meshA.visible = ! even; // after B -> A, draw A
 
+				controls.update();
 				renderer.render( scene, camera );
+				stats.update();
 
 				frame ++;
 

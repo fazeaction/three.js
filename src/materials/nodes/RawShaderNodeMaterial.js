@@ -2,7 +2,7 @@ import NodeMaterial from './NodeMaterial.js';
 import { uniformGroup } from '../../nodes/core/UniformGroupNode.js';
 import { attribute } from '../../nodes/core/AttributeNode.js';
 import { hashString } from '../../nodes/core/NodeUtils.js';
-import { RawResourcesNode, parseVertexInputs, planUniforms, appendDeclarations, inferUniformType } from '../../nodes/code/RawShaderUtils.js';
+import { RawResourcesNode, parseVertexInputs, planUniforms, planStorage, appendDeclarations, inferUniformType } from '../../nodes/code/RawShaderUtils.js';
 
 /**
  * A material for hand-written WGSL, the node system's counterpart of `RawShaderMaterial`.
@@ -15,7 +15,9 @@ import { RawResourcesNode, parseVertexInputs, planUniforms, appendDeclarations, 
  * which share one uniform struct, and `<key>` plus `<key>_sampler` for textures. Renderer-provided
  * values such as `uniforms.modelViewMatrix` and `uniforms.projectionMatrix` are injected only when
  * the text mentions them. Vertex attributes are read from the `@location( n )` inputs of the
- * `@vertex` entry point, inline or through a struct, and must exist on the geometry.
+ * `@vertex` entry point, inline or through a struct, and must exist on the geometry. Storage
+ * buffers declared in `storage` are read-only in the render stages and are referenced as
+ * `<key>.value[ i ]`, with struct layouts from `structs` or a struct the author writes in WGSL.
  *
  * ```js
  * const material = new RawShaderNodeMaterial( {
@@ -98,6 +100,21 @@ class RawShaderNodeMaterial extends NodeMaterial {
 		 */
 		this.attributes = null;
 
+		/**
+		 * Struct layouts by name, usable as storage element types.
+		 *
+		 * @type {Object<string, Object<string, string>>}
+		 */
+		this.structs = {};
+
+		/**
+		 * Storage buffers by name, read-only in the render stages. `type` is a key of
+		 * {@link RawShaderNodeMaterial#structs} or a type name used as is.
+		 *
+		 * @type {Object<string, {value: BufferAttribute, type: ?string}>}
+		 */
+		this.storage = {};
+
 		this._group = uniformGroup( 'uniforms' );
 
 		this.vertexNode = new RawResourcesNode( ( builder ) => this._plan( builder, 'vertex' ) );
@@ -158,6 +175,7 @@ class RawShaderNodeMaterial extends NodeMaterial {
 
 		}
 
+		nodes.push( ...planStorage( source, this.storage, this.structs, this._group ) );
 		nodes.push( ...planUniforms( source, this.uniforms, this._group, true ) );
 
 		return nodes;
@@ -166,9 +184,11 @@ class RawShaderNodeMaterial extends NodeMaterial {
 
 	customProgramCacheKey() {
 
-		const declaration = Object.entries( this.uniforms ).map( ( [ name, entry ] ) => `${ name }:${ entry.type || inferUniformType( entry.value ) }` ).join( ',' );
+		const uniforms = Object.entries( this.uniforms ).map( ( [ name, entry ] ) => `${ name }:${ entry.type || inferUniformType( entry.value ) }` ).join( ',' );
+		const buffers = Object.entries( this.storage ).map( ( [ name, entry ] ) => `${ name }:${ entry.type || '' }` ).join( ',' );
+		const structs = JSON.stringify( this.structs );
 
-		return this.type + hashString( this.vertexShader ) + hashString( this.fragmentShader ) + hashString( declaration );
+		return this.type + hashString( this.vertexShader ) + hashString( this.fragmentShader ) + hashString( uniforms + '|' + buffers + '|' + structs );
 
 	}
 

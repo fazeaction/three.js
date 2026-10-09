@@ -1,8 +1,6 @@
 import ComputeNode from './ComputeNode.js';
-import StructTypeNode from '../core/StructTypeNode.js';
 import { uniformGroup } from '../core/UniformGroupNode.js';
-import { storage } from '../accessors/StorageBufferNode.js';
-import { RawResourcesNode, planUniforms, appendDeclarations, identifierRegExp, stripComments } from '../code/RawShaderUtils.js';
+import { RawResourcesNode, planUniforms, planStorage, appendDeclarations } from '../code/RawShaderUtils.js';
 
 /**
  * A compute node for a hand-written WGSL module, the compute counterpart of
@@ -21,7 +19,8 @@ import { RawResourcesNode, planUniforms, appendDeclarations, identifierRegExp, s
  * 	structs: { Particle: { pos: 'vec2', vel: 'vec2' } },
  * 	storage: {
  * 		particlesA: { value: bufferA, type: 'Particle', access: 'read' },      // -> particlesA.value[ i ].pos
- * 		particlesB: { value: bufferB, type: 'Particle', access: 'read_write' }
+ * 		particlesB: { value: bufferB, type: 'Particle', access: 'read_write' },
+ * 		cellCount: { value: counts, type: 'uint', access: 'read_write', atomic: true } // -> atomicAdd( &cellCount.value[ i ], 1u )
  * 	}
  * } );
  *
@@ -47,7 +46,7 @@ class RawComputeNode extends ComputeNode {
 	 * @param {Array<number>} [parameters.workgroupSize=[64,1,1]] - The workgroup size, matching the module's `@workgroup_size`.
 	 * @param {Object<string, {value: any, type: ?string}>} [parameters.uniforms={}] - Uniforms, referenced as `uniforms.<name>`.
 	 * @param {Object<string, Object<string, string>>} [parameters.structs={}] - Struct layouts by name, usable as storage element types.
-	 * @param {Object<string, {value: BufferAttribute, type: ?string, access: ?string}>} [parameters.storage={}] - Storage buffers by name; `type` is a struct name or a node type, `access` is `'read'` or `'read_write'`.
+	 * @param {Object<string, {value: BufferAttribute, type: ?string, access: ?string, atomic: ?boolean}>} [parameters.storage={}] - Storage buffers by name; `type` is a key of `structs` or a type name used as is, `access` is `'read'` or `'read_write'`, `atomic` wraps the element type in `atomic<>`.
 	 */
 	constructor( { source, count, workgroupSize = [ 64, 1, 1 ], uniforms = {}, structs = {}, storage: buffers = {} } ) {
 
@@ -99,7 +98,7 @@ class RawComputeNode extends ComputeNode {
 		/**
 		 * Storage buffers by name.
 		 *
-		 * @type {Object<string, {value: BufferAttribute, type: ?string, access: ?string}>}
+		 * @type {Object<string, {value: BufferAttribute, type: ?string, access: ?string, atomic: ?boolean}>}
 		 */
 		this.buffers = buffers;
 
@@ -132,32 +131,10 @@ class RawComputeNode extends ComputeNode {
 
 	_plan( /* builder */ ) {
 
-		const source = stripComments( this.source );
-		const nodes = [];
-		const structTypes = {};
-
-		for ( const [ name, layout ] of Object.entries( this.structs ) ) {
-
-			structTypes[ name ] = new StructTypeNode( layout, name );
-
-		}
-
-		for ( const [ name, declaration ] of Object.entries( this.buffers ) ) {
-
-			if ( identifierRegExp( name ).test( source ) !== true ) continue;
-
-			const type = declaration.type !== undefined ? ( structTypes[ declaration.type ] || declaration.type ) : null;
-			const node = storage( declaration.value, type );
-
-			if ( declaration.access === 'read' ) node.toReadOnly();
-
-			nodes.push( node.setName( name ).setGroup( this._group ) );
-
-		}
-
-		nodes.push( ...planUniforms( this.source, this.uniforms, this._group, false ) );
-
-		return nodes;
+		return [
+			...planStorage( this.source, this.buffers, this.structs, this._group ),
+			...planUniforms( this.source, this.uniforms, this._group, false )
+		];
 
 	}
 

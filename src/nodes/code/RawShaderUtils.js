@@ -1,6 +1,8 @@
 import Node from '../core/Node.js';
 import { uniform } from '../core/UniformNode.js';
 import { reference } from '../accessors/ReferenceNode.js';
+import { storage } from '../accessors/StorageBufferNode.js';
+import StructTypeNode from '../core/StructTypeNode.js';
 import { getValueType } from '../core/NodeUtils.js';
 import { Matrix3 } from '../../math/Matrix3.js';
 import { Matrix4 } from '../../math/Matrix4.js';
@@ -239,6 +241,48 @@ export function planUniforms( source, uniforms, group, allowProvided ) {
 			nodes.push( setGroup( reference( 'value', inferUniformType( entry.value ), entry ).setName( name ), group ) );
 
 		}
+
+	}
+
+	return nodes;
+
+}
+
+/**
+ * Creates the nodes for every declared storage buffer the source mentions by bare name.
+ * A buffer's `type` is either a key of `structs`, which the builder then emits as a WGSL struct,
+ * or a type name used as is, so the author may declare the struct in WGSL instead.
+ *
+ * @param {string} source - Shader source of one stage.
+ * @param {Object<string, {value: BufferAttribute, type: ?string, access: ?string, atomic: ?boolean}>} buffers - Storage buffers by name.
+ * @param {Object<string, Object<string, string>>} structs - Struct layouts by name.
+ * @param {UniformGroupNode} group - The uniform group, one bind group for every resource.
+ * @return {Array<Node>} The resource nodes.
+ */
+export function planStorage( source, buffers, structs, group ) {
+
+	source = stripComments( source );
+
+	const nodes = [];
+	const structTypes = {};
+
+	for ( const [ name, layout ] of Object.entries( structs ) ) {
+
+		structTypes[ name ] = new StructTypeNode( layout, name );
+
+	}
+
+	for ( const [ name, declaration ] of Object.entries( buffers ) ) {
+
+		if ( identifierRegExp( name ).test( source ) !== true ) continue;
+
+		const type = declaration.type !== undefined ? ( structTypes[ declaration.type ] || declaration.type ) : null;
+		const node = storage( declaration.value, type );
+
+		if ( declaration.access === 'read' ) node.toReadOnly();
+		if ( declaration.atomic === true ) node.setAtomic( true );
+
+		nodes.push( setGroup( node.setName( name ), group ) );
 
 	}
 
