@@ -18,7 +18,7 @@
 				<a href="https://threejs.org/" target="_blank" rel="noopener">three.js</a><span>Raw Shader Boids</span>
 			</div>
 
-			<small>Hand-written WGSL through RawShaderNodeMaterial and RawComputeNode, up to one million boids.<br />The flocking rules of the birds example, on a uniform grid with atomics instead of the all-pairs loop. The pointer is a predator; P drops a big one.<br />Look: drag to turn the camera, wheel to move into the flock, W A S D R F to move. Orbit: drag to turn around the centre, wheel to zoom.</small>
+			<small>Hand-written WGSL through RawShaderNodeMaterial and RawComputeNode, up to one million boids.<br />The flocking rules of the birds example, on a uniform grid with atomics instead of the all-pairs loop. The pointer is a predator; P releases a bigger bird that hunts through the flock.<br />Look: drag to turn the camera, wheel to move into the flock, W A S D R F to move. Orbit: drag to turn around the centre, wheel to zoom.</small>
 		</div>
 
 		<!-- Vertex module. Particles are pulled from a storage buffer by instance index; the renderer
@@ -323,13 +323,14 @@
 			const pointer = new THREE.Vector2( 10, 10 ); // off screen until the pointer moves
 			const raycaster = new THREE.Raycaster();
 
-			// big predators: position and radius in simulation units, read by the compute pass as vec4( xyz, radius )
+			// predators: bigger birds, one to two boid lengths, read by the compute pass as vec4( xyz, fear radius )
 			const MAX_PREDATORS = 32;
 			const predators = [];
 			const predatorBuffer = new THREE.StorageBufferAttribute( new Float32Array( MAX_PREDATORS * 4 ), 4 );
 			const predatorGroup = new THREE.Group();
-			const predatorGeometry = new THREE.SphereGeometry( 1, 32, 20 );
-			const predatorMaterial = new THREE.MeshBasicNodeMaterial( { color: 0xff5a3c, transparent: true, opacity: 0.22, depthWrite: false } );
+			const predatorGeometry = new THREE.ConeGeometry( 0.35, 1, 6 );
+			predatorGeometry.rotateX( Math.PI / 2 ); // tip towards +z, where lookAt points
+			const predatorMaterial = new THREE.MeshBasicNodeMaterial( { color: 0xff4a2a } );
 			let dragging = false; // while a drag steers the camera, the predator stays away
 
 			// first-person camera: yaw and pitch from drags, movement along the view from the wheel and keys
@@ -569,7 +570,7 @@
 				const meshB = makeMesh( particlesB );
 				scene.add( meshA, meshB );
 
-				flock = { count, zoneScale, particlesA, particlesB, structs, simParams, meshA, meshB, stepAB: [], stepBA: [] };
+				flock = { count, zoneScale, particlesA, particlesB, structs, simParams, meshA, meshB, stepAB: [], stepBA: [], boidLength: renderParams.boidSize.value * BOUNDS_HALF };
 				frame = 0;
 
 				createGrid();
@@ -642,8 +643,9 @@
 
 			}
 
-			// A big predator appears under the pointer, at the depth of the flock's centre, with a random
-			// size, and drifts slowly through the cube.
+			// A predator appears under the pointer, at the depth of the flock's centre, one to two boid
+			// lengths long. Speed follows mass: the small ones dart, the big ones cruise. The flock keeps
+			// a fear radius of several body lengths around each.
 
 			function addPredator() {
 
@@ -663,14 +665,18 @@
 
 				}
 
-				const radius = 80 + Math.random() * 200; // 0.2 to 0.7 of the cube's half size
-				const velocity = new THREE.Vector3( Math.random() - 0.5, Math.random() - 0.5, Math.random() - 0.5 ).normalize().multiplyScalar( 30 + Math.random() * 40 );
+				const boidLength = flock.boidLength;
+				const size = 1 + Math.random(); // in boid lengths
+				const body = size * boidLength;
+				const fear = body * 5; // the flock opens well ahead of the predator
+				const speed = 450 / size; // simulation units per second; the birds do about 135
+				const velocity = new THREE.Vector3( Math.random() - 0.5, Math.random() - 0.5, Math.random() - 0.5 ).normalize().multiplyScalar( speed );
 
 				const mesh = new THREE.Mesh( predatorGeometry, predatorMaterial );
-				mesh.scale.setScalar( radius / BOUNDS_HALF );
+				mesh.scale.setScalar( 2 * body / BOUNDS_HALF );
 				predatorGroup.add( mesh );
 
-				predators.push( { position, velocity, radius, mesh } );
+				predators.push( { position, velocity, fear, mesh } );
 
 				updatePredators( 0 );
 
@@ -716,9 +722,10 @@
 					array[ 4 * i + 0 ] = p.x;
 					array[ 4 * i + 1 ] = p.y;
 					array[ 4 * i + 2 ] = p.z;
-					array[ 4 * i + 3 ] = predator.radius;
+					array[ 4 * i + 3 ] = predator.fear;
 
 					predator.mesh.position.copy( p ).multiplyScalar( 1 / BOUNDS_HALF );
+					predator.mesh.lookAt( _forward.copy( p ).add( v ).multiplyScalar( 1 / BOUNDS_HALF ) );
 
 				}
 
