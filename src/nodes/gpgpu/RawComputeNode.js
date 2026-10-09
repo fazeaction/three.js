@@ -1,5 +1,6 @@
 import ComputeNode from './ComputeNode.js';
 import { uniformGroup } from '../core/UniformGroupNode.js';
+import { NodeUpdateType } from '../core/constants.js';
 import { RawResourcesNode, planUniforms, planStorage, appendDeclarations } from '../code/RawShaderUtils.js';
 
 /**
@@ -102,7 +103,7 @@ class RawComputeNode extends ComputeNode {
 		 */
 		this.buffers = buffers;
 
-		this._group = uniformGroup( 'uniforms' );
+		this._group = uniformGroup( 'uniforms', 1, NodeUpdateType.OBJECT ); // uploaded for every dispatch
 
 	}
 

@@ -1,5 +1,6 @@
 import NodeMaterial from './NodeMaterial.js';
 import { uniformGroup } from '../../nodes/core/UniformGroupNode.js';
+import { NodeUpdateType } from '../../nodes/core/constants.js';
 import { attribute } from '../../nodes/core/AttributeNode.js';
 import { hashString } from '../../nodes/core/NodeUtils.js';
 import { RawResourcesNode, parseVertexInputs, planUniforms, planStorage, appendDeclarations, inferUniformType } from '../../nodes/code/RawShaderUtils.js';
@@ -115,7 +116,7 @@ class RawShaderNodeMaterial extends NodeMaterial {
 		 */
 		this.storage = {};
 
-		this._group = uniformGroup( 'uniforms' );
+		this._group = uniformGroup( 'uniforms', 1, NodeUpdateType.OBJECT ); // uploaded for every object, like the built-in object group
 
 		this.vertexNode = new RawResourcesNode( ( builder ) => this._plan( builder, 'vertex' ) );
 		this.fragmentNode = new RawResourcesNode( ( builder ) => this._plan( builder, 'fragment' ) );
