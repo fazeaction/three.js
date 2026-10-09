@@ -18,7 +18,7 @@
 				<a href="https://threejs.org/" target="_blank" rel="noopener">three.js</a><span>Raw Shader Boids</span>
 			</div>
 
-			<small>Hand-written WGSL through RawShaderNodeMaterial and RawComputeNode, up to one million boids.<br />The flocking rules of the birds example, on a uniform grid with atomics instead of the all-pairs loop. The pointer is a predator; P releases a bigger bird that hunts through the flock.<br />Look: drag to turn the camera, wheel to move into the flock, W A S D R F to move. Orbit: drag to turn around the centre, wheel to zoom.</small>
+			<small>Hand-written WGSL through RawShaderNodeMaterial and RawComputeNode, up to one million boids.<br />The flocking rules of the birds example, on a uniform grid with atomics instead of the all-pairs loop. The pointer is a predator; P releases a bigger bird that picks a boid, chases it and eats it.<br />Look: drag to turn the camera, wheel to move into the flock, W A S D R F to move. Orbit: drag to turn around the centre, wheel to zoom.</small>
 		</div>
 
 		<!-- Vertex module. Particles are pulled from a storage buffer by instance index; the renderer
@@ -73,6 +73,180 @@
 				let light = normalize( vec3f( 0.4, 0.8, 0.6 ) );
 				let diffuse = 0.25 + 0.75 * max( dot( n, light ), 0.0 );
 				return vec4f( color * diffuse, 1.0 );
+
+			}
+
+		</script>
+
+		<!-- Predators are drawn the same way, pulled from their own storage buffer. -->
+		<script id="predatorVertexShader" type="x-shader/x-wgsl">
+
+			struct VertexOutput {
+				@builtin( position ) clip : vec4f,
+				@location( 0 ) color : vec3f,
+				@location( 1 ) normal : vec3f,
+			};
+
+			@vertex
+			fn main(
+				@builtin( instance_index ) instance : u32,
+				@location( 0 ) position : vec3f,
+				@location( 1 ) normal : vec3f
+			) -> VertexOutput {
+
+				let predator = predators.value[ instance ];
+				let p = predator.pos * uniforms.worldScale;
+				let v = predator.vel;
+
+				let speed = length( v );
+				let forward = select( vec3f( 0.0, 0.0, 1.0 ), v / speed, speed > 1e-6 );
+				var up = vec3f( 0.0, 1.0, 0.0 );
+				if ( abs( dot( forward, up ) ) > 0.99 ) {
+					up = vec3f( 1.0, 0.0, 0.0 );
+				}
+				let right = normalize( cross( up, forward ) );
+				let basis = mat3x3f( right, cross( forward, right ), forward );
+
+				let world = p + basis * ( position * predator.body * 2.0 * uniforms.worldScale );
+
+				var output : VertexOutput;
+				output.clip = uniforms.projectionMatrix * uniforms.modelViewMatrix * vec4f( world, 1.0 );
+				output.normal = uniforms.normalMatrix * ( basis * normal );
+				output.color = select( vec3f( 1.0, 0.3, 0.18 ), vec3f( 1.0, 0.75, 0.3 ), predator.cooldown > 0.0 ); // orange while digesting
+				return output;
+
+			}
+
+		</script>
+
+		<!-- Pass 0: the predators hunt. One thread per predator, using last frame's grid to pick the
+		     nearest boid, chasing a little ahead of it, and eating it when close: the prey respawns at
+		     the edge of the cube. Between meals a predator wanders and turns back when it leaves. -->
+		<script id="huntShader" type="x-shader/x-wgsl">
+
+			const NONE = 0xffffffffu;
+
+			fn hash( n : f32 ) -> f32 {
+				return fract( sin( n ) * 43758.5453123 );
+			}
+
+			@compute @workgroup_size( 32 )
+			fn main( @builtin( global_invocation_id ) id : vec3u ) {
+
+				let i = id.x;
+
+				if ( i >= uniforms.predatorCount ) {
+					return;
+				}
+
+				var predator = predators.value[ i ];
+				let deltaTime = uniforms.deltaTime;
+				let seed = f32( predator.seed );
+				let dim = uniforms.gridDim;
+
+				var desired = normalize( predator.vel );
+
+				// a prey that got far away is given up
+
+				if ( predator.prey != NONE ) {
+
+					let prey = particles.value[ predator.prey ];
+
+					if ( distance( prey.pos, predator.pos ) > predator.fear * 4.0 ) {
+						predator.prey = NONE;
+					}
+
+				}
+
+				// pick the nearest boid in the surrounding cells
+
+				if ( predator.prey == NONE && predator.cooldown <= 0.0 ) {
+
+					let home = vec3i( clamp( ( predator.pos + vec3f( uniforms.gridExtent ) ) / uniforms.cellSize, vec3f( 0.0 ), vec3f( f32( dim - 1u ) ) ) );
+					var best = 1e30;
+					var bestIndex = NONE;
+
+					for ( var dz = - 1; dz <= 1; dz ++ ) {
+						for ( var dy = - 1; dy <= 1; dy ++ ) {
+							for ( var dx = - 1; dx <= 1; dx ++ ) {
+
+								let c = home + vec3i( dx, dy, dz );
+
+								if ( any( c < vec3i( 0 ) ) || any( c >= vec3i( i32( dim ) ) ) ) {
+									continue;
+								}
+
+								let cell = u32( c.x ) + u32( c.y ) * dim + u32( c.z ) * dim * dim;
+								let count = min( atomicLoad( &cellCount.value[ cell ] ), uniforms.slots );
+
+								for ( var j = 0u; j < count; j ++ ) {
+
+									let other = cellData.value[ cell * uniforms.slots + j ];
+									let d = distance( other.pos, predator.pos );
+
+									if ( d < best ) {
+										best = d;
+										bestIndex = other.index;
+									}
+
+								}
+
+							}
+						}
+					}
+
+					predator.prey = bestIndex;
+
+				}
+
+				if ( predator.prey != NONE ) {
+
+					// chase, aiming a little ahead of the prey
+
+					let prey = particles.value[ predator.prey ];
+					let aim = prey.pos + prey.vel * 15.0 * 0.25;
+					desired = normalize( aim - predator.pos );
+
+					// eat: the prey reappears at the edge of the cube, and the predator digests for a while
+
+					if ( distance( prey.pos, predator.pos ) < predator.body * 1.5 ) {
+
+						let t = uniforms.time;
+						let spot = normalize( vec3f( hash( seed + t ), hash( seed + t + 1.0 ), hash( seed + t + 2.0 ) ) - vec3f( 0.5 ) ) * 380.0;
+						let kick = ( vec3f( hash( seed + t + 3.0 ), hash( seed + t + 4.0 ), hash( seed + t + 5.0 ) ) - vec3f( 0.5 ) ) * 10.0;
+
+						particles.value[ predator.prey ] = Particle( spot, kick );
+
+						predator.prey = NONE;
+						predator.cooldown = 1.0 + hash( seed + t + 6.0 );
+
+					}
+
+				} else {
+
+					// wander on slow noise, and come back when leaving the cube
+
+					let t = uniforms.time;
+					let wobble = vec3f( sin( t * 0.7 + seed ), sin( t * 0.9 + seed * 2.0 ), sin( t * 1.1 + seed * 3.0 ) );
+					desired = normalize( desired + wobble * 0.4 * deltaTime * 10.0 );
+
+					if ( any( abs( predator.pos ) > vec3f( 360.0 ) ) ) {
+						desired = normalize( desired - normalize( predator.pos ) * 2.0 );
+					}
+
+				}
+
+				// turn smoothly, the fast ones turn faster, and cruise at half speed while digesting
+
+				let turn = min( 1.0, predator.speed * 0.012 * deltaTime );
+				let heading = normalize( mix( normalize( predator.vel ), desired, turn ) + vec3f( 1e-5 ) );
+				let cruise = select( 1.0, 0.5, predator.cooldown > 0.0 );
+
+				predator.vel = heading * predator.speed * cruise;
+				predator.pos += predator.vel * deltaTime;
+				predator.cooldown = max( 0.0, predator.cooldown - deltaTime );
+
+				predators.value[ i ] = predator;
 
 			}
 
@@ -181,9 +355,9 @@
 				for ( var i = 0u; i < uniforms.predatorCount; i ++ ) {
 
 					let predator = predators.value[ i ];
-					let toPredator = predator.xyz - position;
+					let toPredator = predator.pos - position;
 					let distSq = dot( toPredator, toPredator );
-					let radiusSq = predator.w * predator.w;
+					let radiusSq = predator.fear * predator.fear;
 
 					if ( distSq < radiusSq ) {
 						let velocityAdjust = ( distSq / radiusSq - 1.0 ) * deltaTime * 100.0;
@@ -323,14 +497,14 @@
 			const pointer = new THREE.Vector2( 10, 10 ); // off screen until the pointer moves
 			const raycaster = new THREE.Raycaster();
 
-			// predators: bigger birds, one to two boid lengths, read by the compute pass as vec4( xyz, fear radius )
+			// predators: bigger birds that live on the GPU. struct Predator { pos, fear, vel, speed, prey, body, cooldown, seed }, 48 bytes
 			const MAX_PREDATORS = 32;
-			const predators = [];
-			const predatorBuffer = new THREE.StorageBufferAttribute( new Float32Array( MAX_PREDATORS * 4 ), 4 );
-			const predatorGroup = new THREE.Group();
-			const predatorGeometry = new THREE.ConeGeometry( 0.35, 1, 6 );
-			predatorGeometry.rotateX( Math.PI / 2 ); // tip towards +z, where lookAt points
-			const predatorMaterial = new THREE.MeshBasicNodeMaterial( { color: 0xff4a2a } );
+			const PREDATOR_STRIDE = 12;
+			let predatorCount = 0;
+			const predatorBuffer = new THREE.StorageBufferAttribute( new Float32Array( MAX_PREDATORS * PREDATOR_STRIDE ), PREDATOR_STRIDE );
+			const predatorWords = new Uint32Array( predatorBuffer.array.buffer );
+			const predatorStruct = { pos: 'vec3', fear: 'float', vel: 'vec3', speed: 'float', prey: 'uint', body: 'float', cooldown: 'float', seed: 'uint' };
+			let predatorMesh = null;
 			let dragging = false; // while a drag steers the camera, the predator stays away
 
 			// first-person camera: yaw and pitch from drags, movement along the view from the wheel and keys
@@ -364,7 +538,21 @@
 				floor.position.y = - 1;
 				scene.add( floor );
 
-				scene.add( predatorGroup );
+				const predatorCone = new THREE.ConeGeometry( 0.35, 1, 6 );
+				predatorCone.rotateX( Math.PI / 2 );
+
+				const predatorGeometry = new THREE.InstancedBufferGeometry().copy( predatorCone );
+				predatorGeometry.instanceCount = 0;
+
+				predatorMesh = new THREE.Mesh( predatorGeometry, new THREE.RawShaderNodeMaterial( {
+					vertexShader: shader( 'predatorVertexShader' ),
+					fragmentShader: shader( 'fragmentShader' ),
+					uniforms: { worldScale: { value: 1 / BOUNDS_HALF } },
+					structs: { Predator: predatorStruct },
+					storage: { predators: { value: predatorBuffer, type: 'Predator' } }
+				} ) );
+				predatorMesh.frustumCulled = false;
+				scene.add( predatorMesh );
 
 				createFlock( settings.count );
 
@@ -529,7 +717,8 @@
 					rayOrigin: { value: new THREE.Vector3( 0, 0, 1e6 ) },
 					rayDirection: { value: new THREE.Vector3( 0, 0, 1 ) },
 					rayRadius: { value: Math.max( 60, 150 * zoneScale ) },
-					predatorCount: { value: predators.length, type: 'uint' },
+					predatorCount: { value: predatorCount, type: 'uint' },
+					time: { value: 0 },
 					gridExtent: { value: GRID_EXTENT },
 					gridDim: { value: 1, type: 'uint' },
 					cellSize: { value: 1 },
@@ -602,6 +791,22 @@
 				const cellCount = new THREE.StorageBufferAttribute( new Uint32Array( cells ), 1 );
 				const cellData = new THREE.StorageBufferAttribute( new Float32Array( cells * slots * 8 ), 8 );
 
+				const structsWithPredator = { ...structs, Predator: predatorStruct };
+
+				const hunt = ( from ) => new THREE.RawComputeNode( {
+					source: shader( 'huntShader' ),
+					count: MAX_PREDATORS,
+					workgroupSize: [ 32, 1, 1 ],
+					uniforms: simParams,
+					structs: structsWithPredator,
+					storage: {
+						particles: { value: from, type: 'Particle', access: 'read_write' },
+						cellCount: { value: cellCount, type: 'uint', access: 'read_write', atomic: true },
+						cellData: { value: cellData, type: 'Slot', access: 'read' },
+						predators: { value: predatorBuffer, type: 'Predator', access: 'read_write' }
+					}
+				} );
+
 				const clearGrid = new THREE.RawComputeNode( {
 					source: shader( 'clearGridShader' ),
 					count: cells,
@@ -627,29 +832,29 @@
 						source: shader( 'updateBoidsShader' ),
 						count: cells * slots,
 						uniforms: simParams,
-						structs,
+						structs: structsWithPredator,
 						storage: {
 							particlesOut: { value: to, type: 'Particle', access: 'read_write' },
 							cellCount: { value: cellCount, type: 'uint', access: 'read_write', atomic: true },
 							cellData: { value: cellData, type: 'Slot', access: 'read' },
-							predators: { value: predatorBuffer, type: 'vec4', access: 'read' }
+							predators: { value: predatorBuffer, type: 'Predator', access: 'read' }
 						}
 					} )
 
 				];
 
-				flock.stepAB = [ clearGrid, ...step( particlesA, particlesB ) ];
-				flock.stepBA = [ clearGrid, ...step( particlesB, particlesA ) ];
+				flock.stepAB = [ hunt( particlesA ), clearGrid, ...step( particlesA, particlesB ) ];
+				flock.stepBA = [ hunt( particlesB ), clearGrid, ...step( particlesB, particlesA ) ];
 
 			}
 
 			// A predator appears under the pointer, at the depth of the flock's centre, one to two boid
-			// lengths long. Speed follows mass: the small ones dart, the big ones cruise. The flock keeps
-			// a fear radius of several body lengths around each.
+			// lengths long. Speed follows mass: the small ones dart, the big ones cruise. From then on it
+			// lives in the hunt pass; adding one uploads only its own 48 bytes.
 
 			function addPredator() {
 
-				if ( predators.length >= MAX_PREDATORS ) return;
+				if ( predatorCount >= MAX_PREDATORS ) return;
 
 				const position = new THREE.Vector3();
 
@@ -665,73 +870,46 @@
 
 				}
 
-				const boidLength = flock.boidLength;
 				const size = 1 + Math.random(); // in boid lengths
-				const body = size * boidLength;
-				const fear = body * 5; // the flock opens well ahead of the predator
+				const body = size * flock.boidLength;
 				const speed = 450 / size; // simulation units per second; the birds do about 135
 				const velocity = new THREE.Vector3( Math.random() - 0.5, Math.random() - 0.5, Math.random() - 0.5 ).normalize().multiplyScalar( speed );
 
-				const mesh = new THREE.Mesh( predatorGeometry, predatorMaterial );
-				mesh.scale.setScalar( 2 * body / BOUNDS_HALF );
-				predatorGroup.add( mesh );
+				const i = predatorCount * PREDATOR_STRIDE;
+				const array = predatorBuffer.array;
 
-				predators.push( { position, velocity, fear, mesh } );
+				array[ i + 0 ] = position.x;
+				array[ i + 1 ] = position.y;
+				array[ i + 2 ] = position.z;
+				array[ i + 3 ] = body * 5; // fear radius: the flock opens well ahead of the predator
+				array[ i + 4 ] = velocity.x;
+				array[ i + 5 ] = velocity.y;
+				array[ i + 6 ] = velocity.z;
+				array[ i + 7 ] = speed;
+				predatorWords[ i + 8 ] = 0xffffffff; // no prey yet
+				array[ i + 9 ] = body;
+				array[ i + 10 ] = 0; // cooldown
+				predatorWords[ i + 11 ] = Math.floor( Math.random() * 1000 );
 
-				updatePredators( 0 );
+				predatorBuffer.addUpdateRange( i, PREDATOR_STRIDE );
+				predatorBuffer.needsUpdate = true;
+
+				predatorCount ++;
+				setPredatorCount();
 
 			}
 
 			function clearPredators() {
 
-				for ( const predator of predators ) predatorGroup.remove( predator.mesh );
-
-				predators.length = 0;
-				updatePredators( 0 );
+				predatorCount = 0;
+				setPredatorCount();
 
 			}
 
-			function updatePredators( deltaTime ) {
+			function setPredatorCount() {
 
-				const array = predatorBuffer.array;
-
-				for ( let i = 0; i < predators.length; i ++ ) {
-
-					const predator = predators[ i ];
-					const p = predator.position, v = predator.velocity;
-
-					p.addScaledVector( v, deltaTime );
-
-					// bounce inside the cube
-					for ( const axis of [ 'x', 'y', 'z' ] ) {
-
-						if ( p[ axis ] > BOUNDS_HALF ) {
-
-							p[ axis ] = BOUNDS_HALF;
-							v[ axis ] = - Math.abs( v[ axis ] );
-
-						} else if ( p[ axis ] < - BOUNDS_HALF ) {
-
-							p[ axis ] = - BOUNDS_HALF;
-							v[ axis ] = Math.abs( v[ axis ] );
-
-						}
-
-					}
-
-					array[ 4 * i + 0 ] = p.x;
-					array[ 4 * i + 1 ] = p.y;
-					array[ 4 * i + 2 ] = p.z;
-					array[ 4 * i + 3 ] = predator.fear;
-
-					predator.mesh.position.copy( p ).multiplyScalar( 1 / BOUNDS_HALF );
-					predator.mesh.lookAt( _forward.copy( p ).add( v ).multiplyScalar( 1 / BOUNDS_HALF ) );
-
-				}
-
-				predatorBuffer.needsUpdate = true;
-
-				if ( flock !== null ) flock.simParams.predatorCount.value = predators.length;
+				predatorMesh.geometry.instanceCount = predatorCount;
+				flock.simParams.predatorCount.value = predatorCount;
 
 			}
 
@@ -768,8 +946,7 @@
 
 				const { simParams } = flock;
 				simParams.deltaTime.value = deltaTime;
-
-				if ( predators.length > 0 ) updatePredators( deltaTime );
+				simParams.time.value = now / 1000;
 
 				raycaster.setFromCamera( dragging ? new THREE.Vector2( 10, 10 ) : pointer, camera );
 				simParams.rayOrigin.value.copy( raycaster.ray.origin ).multiplyScalar( BOUNDS_HALF );
