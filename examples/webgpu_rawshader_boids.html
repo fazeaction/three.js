@@ -18,7 +18,7 @@
 				<a href="https://threejs.org/" target="_blank" rel="noopener">three.js</a><span>Raw Shader Boids</span>
 			</div>
 
-			<small>Hand-written WGSL through RawShaderNodeMaterial and RawComputeNode, up to one million boids.<br />A uniform grid with atomics replaces the all-pairs loop of the WebGPU Samples "computeBoids" example; each cell keeps copies of its boids so neighbours are read contiguously.</small>
+			<small>Hand-written WGSL through RawShaderNodeMaterial and RawComputeNode, up to one million boids.<br />The flocking rules of the birds example, on a uniform grid with atomics instead of the all-pairs loop. The pointer is a predator.<br />Orbit: drag to rotate, wheel to zoom into the flock. Fly: W A S D move, R F up and down, Q E roll, drag to look.</small>
 		</div>
 
 		<!-- Vertex module. Particles are pulled from a storage buffer by instance index; the renderer
@@ -38,7 +38,7 @@
 				@location( 1 ) normal : vec3f
 			) -> VertexOutput {
 
-				let p = particles.value[ instance ].pos;
+				let p = particles.value[ instance ].pos * uniforms.worldScale;
 				let v = particles.value[ instance ].vel;
 
 				// orient the cone along the velocity
@@ -57,7 +57,7 @@
 				var output : VertexOutput;
 				output.clip = uniforms.projectionMatrix * uniforms.modelViewMatrix * vec4f( world, 1.0 );
 				output.normal = uniforms.normalMatrix * ( basis * normal );
-				output.color = vec3f( 0.55 ) + 0.45 * forward + vec3f( speed * 4.0, 0.0, speed * 2.0 );
+				output.color = vec3f( 0.55 ) + 0.45 * forward + vec3f( speed * 0.03, 0.0, speed * 0.015 );
 				return output;
 
 			}
@@ -95,7 +95,8 @@
 		</script>
 
 		<!-- Pass 2: every boid claims a slot in its grid cell and copies itself there, so pass 3 reads
-		     neighbours contiguously instead of chasing indices through the particle buffer. -->
+		     neighbours contiguously instead of chasing indices through the particle buffer. A boid
+		     whose cell is full keeps flying straight for this frame. -->
 		<script id="binBoidsShader" type="x-shader/x-wgsl">
 
 			@compute @workgroup_size( 64 )
@@ -111,7 +112,7 @@
 				let v = particles.value[ index ].vel;
 
 				let dim = uniforms.gridDim;
-				let c = vec3u( clamp( ( p + vec3f( 1.0 ) ) / uniforms.cellSize, vec3f( 0.0 ), vec3f( f32( dim - 1u ) ) ) );
+				let c = vec3u( clamp( ( p + vec3f( uniforms.gridExtent ) ) / uniforms.cellSize, vec3f( 0.0 ), vec3f( f32( dim - 1u ) ) ) );
 				let cell = c.x + c.y * dim + c.z * dim * dim;
 
 				let slot = atomicAdd( &cellCount.value[ cell ], 1u );
@@ -119,18 +120,19 @@
 				if ( slot < uniforms.slots ) {
 					cellData.value[ cell * uniforms.slots + slot ] = Slot( p, index, v, 0u );
 				} else {
-					// a full cell: this boid skips the rules this frame but is carried over
-					particlesOut.value[ index ] = Particle( p, v );
+					particlesOut.value[ index ] = Particle( p + v * uniforms.deltaTime * 15.0, v );
 				}
 
 			}
 
 		</script>
 
-		<!-- Pass 3: the three boid rules over the 27 neighbouring cells, written to the other buffer.
-		     One thread per cell slot rather than per boid, so the threads of a workgroup share the
-		     same neighbourhood and the reads stay in cache. -->
+		<!-- Pass 3: the rules of webgpu_compute_birds, over the 27 neighbouring cells, written to the
+		     other buffer. One thread per cell slot rather than per boid, so the threads of a workgroup
+		     share the same neighbourhood and the reads stay in cache. -->
 		<script id="updateBoidsShader" type="x-shader/x-wgsl">
+
+			const PI_2 = 6.283185307179586;
 
 			@compute @workgroup_size( 64 )
 			fn main( @builtin( global_invocation_id ) id : vec3u ) {
@@ -149,13 +151,38 @@
 
 				let boid = cellData.value[ slotIndex ];
 				let index = boid.index;
-				var vPos = boid.pos;
-				var vVel = boid.vel;
-				var cMass = vec3f( 0.0 );
-				var cVel = vec3f( 0.0 );
-				var colVel = vec3f( 0.0 );
-				var cMassCount = 0u;
-				var cVelCount = 0u;
+				let position = boid.pos;
+				var velocity = boid.vel;
+				var limit = uniforms.speedLimit;
+
+				let deltaTime = uniforms.deltaTime;
+				let zoneRadius = uniforms.separation + uniforms.alignment + uniforms.cohesion;
+				let separationThresh = uniforms.separation / zoneRadius;
+				let alignmentThresh = ( uniforms.separation + uniforms.alignment ) / zoneRadius;
+				let zoneRadiusSq = zoneRadius * zoneRadius;
+
+				// the pointer ray is a predator
+
+				let directionToRay = uniforms.rayOrigin - position;
+				let projectionLength = dot( directionToRay, uniforms.rayDirection );
+				let closestPoint = uniforms.rayOrigin - uniforms.rayDirection * projectionLength;
+				let directionToClosestPoint = closestPoint - position;
+				let distanceToClosestPointSq = dot( directionToClosestPoint, directionToClosestPoint );
+				let rayRadiusSq = uniforms.rayRadius * uniforms.rayRadius;
+
+				if ( distanceToClosestPointSq < rayRadiusSq ) {
+					let velocityAdjust = ( distanceToClosestPointSq / rayRadiusSq - 1.0 ) * deltaTime * 100.0;
+					velocity += normalize( directionToClosestPoint ) * velocityAdjust;
+					limit += 5.0;
+				}
+
+				// attract flocks to the centre
+
+				var dirToCenter = position;
+				dirToCenter.y *= 2.5;
+				velocity -= normalize( dirToCenter ) * deltaTime * 5.0;
+
+				// the three rules over the neighbouring cells
 
 				let dim = uniforms.gridDim;
 				let home = vec3i( i32( cell % dim ), i32( ( cell / dim ) % dim ), i32( cell / ( dim * dim ) ) );
@@ -170,31 +197,48 @@
 								continue;
 							}
 
-							let other_cell = u32( c.x ) + u32( c.y ) * dim + u32( c.z ) * dim * dim;
-							let count = min( atomicLoad( &cellCount.value[ other_cell ] ), uniforms.slots );
+							let otherCell = u32( c.x ) + u32( c.y ) * dim + u32( c.z ) * dim * dim;
+							let count = min( atomicLoad( &cellCount.value[ otherCell ] ), uniforms.slots );
 
 							for ( var j = 0u; j < count; j ++ ) {
 
-								let other = cellData.value[ other_cell * uniforms.slots + j ];
+								let other = cellData.value[ otherCell * uniforms.slots + j ];
 
 								if ( other.index == index ) {
 									continue;
 								}
 
-								let pos = other.pos;
-								let vel = other.vel;
-								let d = distance( pos, vPos );
+								let dirToBird = other.pos - position;
+								let distToBirdSq = dot( dirToBird, dirToBird );
 
-								if ( d < uniforms.rule1Distance ) {
-									cMass += pos;
-									cMassCount ++;
+								if ( distToBirdSq < 1e-4 || distToBirdSq > zoneRadiusSq ) {
+									continue;
 								}
-								if ( d < uniforms.rule2Distance ) {
-									colVel -= pos - vPos;
-								}
-								if ( d < uniforms.rule3Distance ) {
-									cVel += vel;
-									cVelCount ++;
+
+								let percent = distToBirdSq / zoneRadiusSq;
+
+								if ( percent < separationThresh ) {
+
+									// separation: move apart for comfort
+									let velocityAdjust = ( separationThresh / percent - 1.0 ) * deltaTime;
+									velocity -= normalize( dirToBird ) * velocityAdjust;
+
+								} else if ( percent < alignmentThresh ) {
+
+									// alignment: fly the same direction
+									let threshDelta = alignmentThresh - separationThresh;
+									let adjustedPercent = ( percent - separationThresh ) / threshDelta;
+									let velocityAdjust = ( 0.5 - cos( adjustedPercent * PI_2 ) * 0.5 + 0.5 ) * deltaTime;
+									velocity += normalize( other.vel ) * velocityAdjust;
+
+								} else {
+
+									// cohesion: move closer
+									let threshDelta = 1.0 - alignmentThresh;
+									let adjustedPercent = select( ( percent - alignmentThresh ) / threshDelta, 1.0, threshDelta == 0.0 );
+									let velocityAdjust = ( 0.5 - ( cos( adjustedPercent * PI_2 ) * - 0.5 + 0.5 ) ) * deltaTime;
+									velocity += normalize( dirToBird ) * velocityAdjust;
+
 								}
 
 							}
@@ -203,28 +247,14 @@
 					}
 				}
 
-				if ( cMassCount > 0u ) {
-					cMass = ( cMass / f32( cMassCount ) ) - vPos;
-				}
-				if ( cVelCount > 0u ) {
-					cVel /= f32( cVelCount );
-				}
+				// speed limit
 
-				vVel += ( cMass * uniforms.rule1Scale ) + ( colVel * uniforms.rule2Scale ) + ( cVel * uniforms.rule3Scale );
-
-				// clamp velocity for a more pleasing simulation
-				let speed = length( vVel );
-				if ( speed > 1e-6 ) {
-					vVel = vVel / speed * clamp( speed, 0.0, 0.1 );
+				let speed = length( velocity );
+				if ( speed > limit ) {
+					velocity = velocity / speed * limit;
 				}
 
-				// kinematic update
-				vPos = vPos + ( vVel * uniforms.deltaT );
-
-				// wrap around the cube
-				vPos = vPos - 2.0 * floor( ( vPos + vec3f( 1.0 ) ) * 0.5 );
-
-				particlesOut.value[ index ] = Particle( vPos, vVel );
+				particlesOut.value[ index ] = Particle( position + velocity * deltaTime * 15.0, velocity );
 
 			}
 
@@ -246,16 +276,35 @@
 			import * as THREE from 'three/webgpu';
 
 			import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+			import { FlyControls } from 'three/addons/controls/FlyControls.js';
 			import { GUI } from 'three/addons/libs/lil-gui.module.min.js';
 			import Stats from 'three/addons/libs/stats.module.js';
 
 			const shader = ( id ) => document.getElementById( id ).textContent;
 
-			const settings = { count: 100000 };
+			// The simulation runs in the units of webgpu_compute_birds: a cube of BOUNDS, speed limit 9,
+			// zone radius separation + alignment + cohesion. Rendering scales it to a cube of side 2.
+
+			const BOUNDS = 800, BOUNDS_HALF = BOUNDS / 2;
+			const SPEED_LIMIT = 9.0;
+			const GRID_EXTENT = 450; // the grid covers this far from the centre, stragglers use the edge cells
+
+			const settings = {
+				count: 100000,
+				separation: 15.0,
+				alignment: 20.0,
+				cohesion: 20.0,
+				camera: 'orbit',
+				autoRotate: false
+			};
 
 			let renderer, scene, camera, controls, stats;
 			let flock = null;
-			let frame = 0;
+			let frame = 0, last = performance.now();
+
+			const clock = new THREE.Clock();
+			const pointer = new THREE.Vector2( 10, 10 ); // off screen until the pointer moves
+			const raycaster = new THREE.Raycaster();
 
 			init();
 
@@ -274,8 +323,7 @@
 				camera = new THREE.PerspectiveCamera( 50, window.innerWidth / window.innerHeight, 0.01, 50 );
 				camera.position.set( 2.6, 1.6, 2.6 );
 
-				controls = new OrbitControls( camera, renderer.domElement );
-				controls.enableDamping = true;
+				setCameraMode( settings.camera );
 
 				const box = new THREE.LineSegments( new THREE.EdgesGeometry( new THREE.BoxGeometry( 2, 2, 2 ) ), new THREE.LineBasicNodeMaterial( { color: 0x33404f } ) );
 				scene.add( box );
@@ -287,26 +335,58 @@
 
 				const gui = new GUI();
 				gui.add( settings, 'count', { '1.5k': 1500, '10k': 10000, '100k': 100000, '500k': 500000, '1M': 1000000 } ).name( 'boids' ).onChange( ( count ) => createFlock( count ) );
+				gui.add( settings, 'separation', 0.0, 100.0, 1.0 ).onChange( () => createGrid() );
+				gui.add( settings, 'alignment', 0.0, 100.0, 1.0 ).onChange( () => createGrid() );
+				gui.add( settings, 'cohesion', 0.0, 100.0, 1.0 ).onChange( () => createGrid() );
+				gui.add( settings, 'camera', [ 'orbit', 'fly' ] ).onChange( ( mode ) => setCameraMode( mode ) );
+				gui.add( settings, 'autoRotate' ).name( 'auto rotate' ).onChange( ( value ) => {
 
+					if ( controls.autoRotate !== undefined ) controls.autoRotate = value;
+
+				} );
+
+				renderer.domElement.addEventListener( 'pointermove', onPointerMove );
 				window.addEventListener( 'resize', onWindowResize );
 
 				renderer.setAnimationLoop( animate );
 
 			}
 
-			// The rule radius shrinks with the count so that every boid keeps about twelve neighbours,
-			// and the grid cell is the largest rule radius, so 27 cells cover the search.
+			// Orbit rotates around the centre and zooms all the way into the flock; fly moves through it.
 
-			function layoutFor( count ) {
+			function setCameraMode( mode ) {
 
-				const density = count / 8; // the cube spans [ -1, 1 ] on each axis
-				const radius = Math.min( 0.35, Math.max( 0.02, Math.cbrt( 12 / ( density * 4.18879 ) ) ) );
-				const gridDim = Math.max( 1, Math.floor( 2 / radius ) );
+				if ( controls !== undefined ) controls.dispose();
 
-				const cells = gridDim ** 3;
-				const slots = Math.min( 16, Math.max( 4, Math.floor( 96e6 / ( cells * 32 ) ) ) ); // 32 bytes per slot, under the default storage binding limit
+				if ( mode === 'fly' ) {
 
-				return { radius, gridDim, cellSize: 2 / gridDim, cells, slots };
+					controls = new FlyControls( camera, renderer.domElement );
+					controls.movementSpeed = 0.6;
+					controls.rollSpeed = 0.4;
+					controls.dragToLook = true;
+
+				} else {
+
+					controls = new OrbitControls( camera, renderer.domElement );
+					controls.enableDamping = true;
+					controls.minDistance = 0.02;
+					controls.maxDistance = 12;
+					controls.autoRotate = settings.autoRotate;
+					controls.autoRotateSpeed = 1.5;
+
+				}
+
+			}
+
+			// The zone radius of the birds example suits about a thousand birds. For larger counts it
+			// shrinks so that every boid keeps roughly a dozen neighbours at uniform density.
+
+			function zoneScaleFor( count ) {
+
+				const density = count / ( BOUNDS ** 3 );
+				const radius = Math.cbrt( 12 / ( density * 4.18879 ) );
+
+				return Math.min( 1, Math.max( 0.15, radius / 55 ) );
 
 			}
 
@@ -322,7 +402,7 @@
 
 				}
 
-				const layout = layoutFor( count );
+				const zoneScale = zoneScaleFor( count );
 
 				// particle = struct Particle { pos : vec3f, vel : vec3f }, 32 bytes with WGSL alignment
 
@@ -330,34 +410,33 @@
 
 				for ( let i = 0; i < count; i ++ ) {
 
-					initial[ 8 * i + 0 ] = 2 * ( Math.random() - 0.5 );
-					initial[ 8 * i + 1 ] = 2 * ( Math.random() - 0.5 );
-					initial[ 8 * i + 2 ] = 2 * ( Math.random() - 0.5 );
-					initial[ 8 * i + 4 ] = 2 * ( Math.random() - 0.5 ) * 0.1;
-					initial[ 8 * i + 5 ] = 2 * ( Math.random() - 0.5 ) * 0.1;
-					initial[ 8 * i + 6 ] = 2 * ( Math.random() - 0.5 ) * 0.1;
+					initial[ 8 * i + 0 ] = Math.random() * BOUNDS - BOUNDS_HALF;
+					initial[ 8 * i + 1 ] = Math.random() * BOUNDS - BOUNDS_HALF;
+					initial[ 8 * i + 2 ] = Math.random() * BOUNDS - BOUNDS_HALF;
+					initial[ 8 * i + 4 ] = ( Math.random() - 0.5 ) * 10;
+					initial[ 8 * i + 5 ] = ( Math.random() - 0.5 ) * 10;
+					initial[ 8 * i + 6 ] = ( Math.random() - 0.5 ) * 10;
 
 				}
 
 				const particlesA = new THREE.StorageBufferAttribute( initial, 8 );
 				const particlesB = new THREE.StorageBufferAttribute( initial.slice(), 8 );
-				const cellCount = new THREE.StorageBufferAttribute( new Uint32Array( layout.cells ), 1 );
-				const cellData = new THREE.StorageBufferAttribute( new Float32Array( layout.cells * layout.slots * 8 ), 8 );
 
-				// struct Slot { pos : vec3f, index : u32, vel : vec3f, pad : u32 } packs into the same 32 bytes as a Particle
 				const structs = { Particle: { pos: 'vec3', vel: 'vec3' }, Slot: { pos: 'vec3', index: 'uint', vel: 'vec3', pad: 'uint' } };
 
 				const simParams = {
-					deltaT: { value: 0.04 },
-					rule1Distance: { value: layout.radius },
-					rule2Distance: { value: layout.radius * 0.25 },
-					rule3Distance: { value: layout.radius * 0.25 },
-					rule1Scale: { value: 0.02 },
-					rule2Scale: { value: 0.05 },
-					rule3Scale: { value: 0.005 },
-					gridDim: { value: layout.gridDim, type: 'uint' },
-					cellSize: { value: layout.cellSize },
-					slots: { value: layout.slots, type: 'uint' }
+					deltaTime: { value: 0.016 },
+					speedLimit: { value: SPEED_LIMIT },
+					separation: { value: settings.separation * zoneScale },
+					alignment: { value: settings.alignment * zoneScale },
+					cohesion: { value: settings.cohesion * zoneScale },
+					rayOrigin: { value: new THREE.Vector3( 0, 0, 1e6 ) },
+					rayDirection: { value: new THREE.Vector3( 0, 0, 1 ) },
+					rayRadius: { value: Math.max( 60, 150 * zoneScale ) },
+					gridExtent: { value: GRID_EXTENT },
+					gridDim: { value: 1, type: 'uint' },
+					cellSize: { value: 1 },
+					slots: { value: 1, type: 'uint' }
 				};
 
 				// render: a cone per boid, instance data pulled from the particle buffer
@@ -365,7 +444,10 @@
 				const cone = new THREE.ConeGeometry( 0.35, 1, 4, 1, true );
 				cone.rotateX( Math.PI / 2 ); // tip towards +z, the forward axis in the vertex shader
 
-				const renderParams = { boidSize: { value: Math.min( 0.04, Math.max( 0.004, layout.radius * 0.3 ) ) } };
+				const renderParams = {
+					worldScale: { value: 1 / BOUNDS_HALF },
+					boidSize: { value: Math.min( 0.03, Math.max( 0.004, 0.02 * zoneScale ) ) }
+				};
 
 				const makeMesh = ( particles ) => {
 
@@ -391,11 +473,41 @@
 				const meshB = makeMesh( particlesB );
 				scene.add( meshA, meshB );
 
-				// compute: clear the grid, bin the boids, apply the rules; built once per direction
+				flock = { count, zoneScale, particlesA, particlesB, structs, simParams, meshA, meshB, stepAB: [], stepBA: [] };
+				frame = 0;
+
+				createGrid();
+
+			}
+
+			// The grid cell is the zone radius, so 27 cells cover the search. Cells keep a bounded number
+			// of boid copies, sized from the device's storage binding limit.
+
+			function createGrid() {
+
+				const { count, zoneScale, particlesA, particlesB, structs, simParams } = flock;
+
+				simParams.separation.value = settings.separation * zoneScale;
+				simParams.alignment.value = settings.alignment * zoneScale;
+				simParams.cohesion.value = settings.cohesion * zoneScale;
+
+				const zoneRadius = Math.max( 1, simParams.separation.value + simParams.alignment.value + simParams.cohesion.value );
+				const gridDim = Math.min( 128, Math.max( 1, Math.floor( 2 * GRID_EXTENT / zoneRadius ) ) );
+				const cells = gridDim ** 3;
+
+				const budget = Math.min( renderer.backend.device.limits.maxStorageBufferBindingSize, 512e6 ) * 0.75;
+				const slots = Math.min( 16, Math.max( 4, Math.floor( budget / ( cells * 32 ) ) ) ); // 32 bytes per slot
+
+				simParams.gridDim.value = gridDim;
+				simParams.cellSize.value = 2 * GRID_EXTENT / gridDim;
+				simParams.slots.value = slots;
+
+				const cellCount = new THREE.StorageBufferAttribute( new Uint32Array( cells ), 1 );
+				const cellData = new THREE.StorageBufferAttribute( new Float32Array( cells * slots * 8 ), 8 );
 
 				const clearGrid = new THREE.RawComputeNode( {
 					source: shader( 'clearGridShader' ),
-					count: layout.cells,
+					count: cells,
 					storage: { cellCount: { value: cellCount, type: 'uint', access: 'read_write', atomic: true } }
 				} );
 
@@ -416,7 +528,7 @@
 
 					new THREE.RawComputeNode( {
 						source: shader( 'updateBoidsShader' ),
-						count: layout.cells * layout.slots,
+						count: cells * slots,
 						uniforms: simParams,
 						structs,
 						storage: {
@@ -428,13 +540,17 @@
 
 				];
 
-				flock = {
-					meshA, meshB,
-					stepAB: [ clearGrid, ...step( particlesA, particlesB ) ],
-					stepBA: [ clearGrid, ...step( particlesB, particlesA ) ]
-				};
+				flock.stepAB = [ clearGrid, ...step( particlesA, particlesB ) ];
+				flock.stepBA = [ clearGrid, ...step( particlesB, particlesA ) ];
 
-				frame = 0;
+			}
+
+			function onPointerMove( event ) {
+
+				if ( event.isPrimary === false ) return;
+
+				pointer.x = ( event.clientX / window.innerWidth ) * 2.0 - 1.0;
+				pointer.y = 1.0 - ( event.clientY / window.innerHeight ) * 2.0;
 
 			}
 
@@ -449,6 +565,17 @@
 
 			function animate() {
 
+				const now = performance.now();
+				const deltaTime = Math.min( 1, ( now - last ) / 1000 ); // safety cap on large deltas
+				last = now;
+
+				const { simParams } = flock;
+				simParams.deltaTime.value = deltaTime;
+
+				raycaster.setFromCamera( pointer, camera );
+				simParams.rayOrigin.value.copy( raycaster.ray.origin ).multiplyScalar( BOUNDS_HALF );
+				simParams.rayDirection.value.copy( raycaster.ray.direction );
+
 				const even = frame % 2 === 0;
 
 				renderer.compute( even ? flock.stepAB : flock.stepBA );
@@ -456,7 +583,7 @@
 				flock.meshB.visible = even; // after A -> B, draw B
 				flock.meshA.visible = ! even; // after B -> A, draw A
 
-				controls.update();
+				controls.update( clock.getDelta() );
 				renderer.render( scene, camera );
 				stats.update();
 
