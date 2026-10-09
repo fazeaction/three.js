@@ -18,7 +18,7 @@
 				<a href="https://threejs.org/" target="_blank" rel="noopener">three.js</a><span>Raw Shader Boids</span>
 			</div>
 
-			<small>Hand-written WGSL through RawShaderNodeMaterial and RawComputeNode, up to one million boids.<br />The flocking rules of the birds example, on a uniform grid with atomics instead of the all-pairs loop. The pointer is a predator.<br />Orbit: drag to rotate, wheel to zoom into the flock. Fly: W A S D move, R F up and down, Q E roll, drag to look.</small>
+			<small>Hand-written WGSL through RawShaderNodeMaterial and RawComputeNode, up to one million boids.<br />The flocking rules of the birds example, on a uniform grid with atomics instead of the all-pairs loop. The pointer is a predator.<br />Look: drag to turn the camera, wheel to move into the flock, W A S D R F to move. Orbit: drag to turn around the centre, wheel to zoom.</small>
 		</div>
 
 		<!-- Vertex module. Particles are pulled from a storage buffer by instance index; the renderer
@@ -276,7 +276,6 @@
 			import * as THREE from 'three/webgpu';
 
 			import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
-			import { FlyControls } from 'three/addons/controls/FlyControls.js';
 			import { GUI } from 'three/addons/libs/lil-gui.module.min.js';
 			import Stats from 'three/addons/libs/stats.module.js';
 
@@ -294,11 +293,12 @@
 				separation: 15.0,
 				alignment: 20.0,
 				cohesion: 20.0,
-				camera: 'orbit',
+				camera: 'look',
 				autoRotate: false
 			};
 
-			let renderer, scene, camera, controls, stats;
+			let renderer, scene, camera, stats;
+			let controls = null;
 			let flock = null;
 			let frame = 0, last = performance.now();
 
@@ -306,6 +306,10 @@
 			const pointer = new THREE.Vector2( 10, 10 ); // off screen until the pointer moves
 			const raycaster = new THREE.Raycaster();
 			let dragging = false; // while a drag steers the camera, the predator stays away
+
+			// first-person camera: yaw and pitch from drags, movement along the view from the wheel and keys
+			const look = { yaw: 0, pitch: 0, keys: new Set(), speed: 0.8 };
+			const _forward = new THREE.Vector3(), _right = new THREE.Vector3();
 
 			init();
 
@@ -323,6 +327,7 @@
 
 				camera = new THREE.PerspectiveCamera( 50, window.innerWidth / window.innerHeight, 0.01, 50 );
 				camera.position.set( 2.6, 1.6, 2.6 );
+				camera.lookAt( 0, 0, 0 );
 
 				setCameraMode( settings.camera );
 
@@ -343,36 +348,37 @@
 				gui.add( settings, 'separation', 0.0, 100.0, 1.0 ).onChange( () => createGrid() );
 				gui.add( settings, 'alignment', 0.0, 100.0, 1.0 ).onChange( () => createGrid() );
 				gui.add( settings, 'cohesion', 0.0, 100.0, 1.0 ).onChange( () => createGrid() );
-				gui.add( settings, 'camera', [ 'orbit', 'fly' ] ).onChange( ( mode ) => setCameraMode( mode ) );
-				gui.add( settings, 'autoRotate' ).name( 'auto rotate' ).onChange( ( value ) => {
+				gui.add( settings, 'camera', [ 'look', 'orbit' ] ).onChange( ( mode ) => setCameraMode( mode ) );
+				gui.add( settings, 'autoRotate' ).name( 'auto rotate (orbit)' ).onChange( ( value ) => {
 
-					if ( controls.autoRotate !== undefined ) controls.autoRotate = value;
+					if ( controls !== null ) controls.autoRotate = value;
 
 				} );
 
 				renderer.domElement.addEventListener( 'pointermove', onPointerMove );
-				renderer.domElement.addEventListener( 'pointerdown', () => dragging = true );
+				renderer.domElement.addEventListener( 'pointerdown', onPointerDown );
+				renderer.domElement.addEventListener( 'wheel', onWheel, { passive: false } );
 				window.addEventListener( 'pointerup', () => dragging = false );
+				window.addEventListener( 'keydown', ( event ) => look.keys.add( event.code ) );
+				window.addEventListener( 'keyup', ( event ) => look.keys.delete( event.code ) );
 				window.addEventListener( 'resize', onWindowResize );
 
 				renderer.setAnimationLoop( animate );
 
 			}
 
-			// Orbit rotates around the centre and zooms all the way into the flock; fly moves through it.
+			// Look turns the camera itself and moves it through the flock; orbit turns around the centre.
 
 			function setCameraMode( mode ) {
 
-				if ( controls !== undefined ) controls.dispose();
+				if ( controls ) {
 
-				if ( mode === 'fly' ) {
+					controls.dispose();
+					controls = null;
 
-					controls = new FlyControls( camera, renderer.domElement );
-					controls.movementSpeed = 0.6;
-					controls.rollSpeed = 0.4;
-					controls.dragToLook = true;
+				}
 
-				} else {
+				if ( mode === 'orbit' ) {
 
 					controls = new OrbitControls( camera, renderer.domElement );
 					controls.enableDamping = true;
@@ -381,7 +387,54 @@
 					controls.autoRotate = settings.autoRotate;
 					controls.autoRotateSpeed = 1.5;
 
+				} else {
+
+					const euler = new THREE.Euler().setFromQuaternion( camera.quaternion, 'YXZ' );
+					look.yaw = euler.y;
+					look.pitch = euler.x;
+
 				}
+
+			}
+
+			function onPointerDown( event ) {
+
+				dragging = true;
+
+				if ( settings.camera !== 'look' ) return;
+
+				renderer.domElement.setPointerCapture( event.pointerId );
+
+			}
+
+			function onWheel( event ) {
+
+				if ( settings.camera !== 'look' ) return;
+
+				event.preventDefault();
+
+				// wheel up moves into the view, wheel down backs out
+				camera.getWorldDirection( _forward );
+				camera.position.addScaledVector( _forward, - Math.sign( event.deltaY ) * 0.08 );
+
+			}
+
+			function updateLook( deltaTime ) {
+
+				camera.rotation.set( look.pitch, look.yaw, 0, 'YXZ' );
+
+				const keys = look.keys;
+				const step = look.speed * deltaTime;
+
+				camera.getWorldDirection( _forward );
+				_right.crossVectors( _forward, camera.up ).normalize();
+
+				if ( keys.has( 'KeyW' ) || keys.has( 'ArrowUp' ) ) camera.position.addScaledVector( _forward, step );
+				if ( keys.has( 'KeyS' ) || keys.has( 'ArrowDown' ) ) camera.position.addScaledVector( _forward, - step );
+				if ( keys.has( 'KeyD' ) || keys.has( 'ArrowRight' ) ) camera.position.addScaledVector( _right, step );
+				if ( keys.has( 'KeyA' ) || keys.has( 'ArrowLeft' ) ) camera.position.addScaledVector( _right, - step );
+				if ( keys.has( 'KeyR' ) ) camera.position.y += step;
+				if ( keys.has( 'KeyF' ) ) camera.position.y -= step;
 
 			}
 
@@ -559,6 +612,13 @@
 				pointer.x = ( event.clientX / window.innerWidth ) * 2.0 - 1.0;
 				pointer.y = 1.0 - ( event.clientY / window.innerHeight ) * 2.0;
 
+				if ( dragging && settings.camera === 'look' ) {
+
+					look.yaw -= event.movementX * 0.004;
+					look.pitch = Math.max( - 1.5, Math.min( 1.5, look.pitch - event.movementY * 0.004 ) );
+
+				}
+
 			}
 
 			function onWindowResize() {
@@ -590,7 +650,11 @@
 				flock.meshB.visible = even; // after A -> B, draw B
 				flock.meshA.visible = ! even; // after B -> A, draw A
 
-				controls.update( clock.getDelta() );
+				const controlDelta = clock.getDelta();
+
+				if ( controls !== null ) controls.update( controlDelta );
+				else updateLook( controlDelta );
+
 				renderer.render( scene, camera );
 				stats.update();
 
